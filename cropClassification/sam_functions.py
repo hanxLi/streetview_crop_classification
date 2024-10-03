@@ -557,14 +557,15 @@ def load_and_display_img_mask_pair(img_path, mask_path, mask_score, current, tot
     plt.close()
 
 
-def evaluate_img_mask_pair(df, mask_save_path, return_df=False):
+
+def evaluate_img_mask_pair(df, mask_save_path, return_df=False, continue_index=None):
     """
     Evaluate image and mask pairs, allowing user interaction to accept or reject each pair.
-    
-    For each image-mask pair, the function displays the pair and prompts the user to accept 
-    or reject it. If rejected, the mask file is deleted. The accepted pairs are saved as a 
-    new GeoDataFrame, and optionally, the modified DataFrame can be returned.
-    
+
+    The function now checks the mask save directory to identify previously deleted masks,
+    and resumes evaluation accordingly. It accepts 'y' or 'n' input from the user to accept
+    or reject each image-mask pair.
+
     Parameters
     ----------
     df : pandas.DataFrame
@@ -576,24 +577,53 @@ def evaluate_img_mask_pair(df, mask_save_path, return_df=False):
         The directory path where mask files are stored, and where the output GeoJSON files will be saved.
     return_df : bool, optional, default=False
         If True, the function returns the modified DataFrame with accepted image-mask pairs.
-    
+    continue_index : int, optional
+        The index to resume evaluation from. If provided, the function will reconstruct the
+        accepted and deleted mask lists up to this point based on the current state of the mask directory.
+
     Returns
     -------
     pandas.DataFrame or None
         Returns the modified DataFrame with accepted image-mask pairs if return_df is True. Otherwise, returns None.
     """
-    accepted_indices = []  # Keep track of accepted images
-    deleted_masks = []  # Keep track of deleted masks
 
-    for i, row in df.iterrows():
+    # List to keep track of accepted and deleted masks
+    accepted_indices = []
+    deleted_masks = []
+
+    # Step 1: Check the mask save directory to see which masks are already deleted
+    existing_masks = set(os.listdir(mask_save_path))  # List all mask files currently in the directory
+
+    # Step 2: Rebuild the accepted and deleted lists by checking the current state of the masks
+    for idx, row in df.iterrows():
+        mask_name = row["mask_name"]
+        mask_path = os.path.join(mask_save_path, mask_name)
+        
+        # If the mask file exists in the directory, it hasn't been deleted yet
+        if mask_name in existing_masks:
+            accepted_indices.append(idx)  # Consider it accepted so far
+        else:
+            deleted_masks.append(mask_path)  # Track the mask as already deleted
+
+    # Step 3: Resume from the continue_index if provided
+    start_index = 0
+    if continue_index is not None and continue_index < len(df):
+        start_index = continue_index
+        # Adjust the accepted indices to only include those before the continue index
+        accepted_indices = [idx for idx in accepted_indices if idx < start_index]
+    
+    # Step 4: Continue the evaluation of images from the continue_index or start
+    for i in range(start_index, len(df)):
+        row = df.iloc[i]
         img_path = row["save_path"].replace("/home/hanxli/data/",
                                             "/Users/steeeve/Documents/csiss/")
-        mask_path = os.path.join(mask_save_path, row["mask_name"])
+        mask_name = row["mask_name"]
+        mask_path = os.path.join(mask_save_path, mask_name)
         mask_score = row["mask_score"]
 
         # Check if the mask path exists
-        if not os.path.exists(mask_path):
-            print(f"Mask file '{mask_path}' does not exist. Skipping...")
+        if mask_name not in existing_masks:
+            print(f"Mask file '{mask_name}' was already deleted. Skipping...")
             continue
 
         # Clear previous plot output
@@ -602,23 +632,22 @@ def evaluate_img_mask_pair(df, mask_save_path, return_df=False):
         # Use the helper function to load and display the image-mask pair with progress
         load_and_display_img_mask_pair(img_path, mask_path, mask_score, i, len(df))
 
-        # Prompt user for input
-        user_input = input("Accept with Y or reject and delete with N (y/n): ").strip().lower()
+        # Prompt user for input (y/n)
+        user_input = input("Accept with 'y' or reject and delete with 'n' (y/n): ").strip().lower()
 
         if user_input == 'y':
-            # If accepted, add to the list of accepted indices
-            accepted_indices.append(i)
+            accepted_indices.append(i)  # Use the positional index `i` directly
         elif user_input == 'n':
-            # If rejected, delete the mask and track the deletion
             try:
-                os.remove(mask_path)  # Delete the mask file
-                print(f"Mask file '{row['mask_name']}' deleted.")
+                os.remove(mask_path)
+                print(f"Mask file '{mask_name}' deleted.")
                 deleted_masks.append(mask_path)
+                existing_masks.remove(mask_name)  # Update existing masks to reflect the deletion
             except OSError as e:
                 print(f"Error deleting mask file: {e}")
 
-    # After review, update the DataFrame to exclude deleted masks
-    df = df.loc[accepted_indices].reset_index(drop=True)
+    # Step 5: After review, update the DataFrame to exclude deleted masks using iloc (positional indices)
+    df = df.iloc[accepted_indices].reset_index(drop=True)  # Use the original DataFrame index
     df_new = df.copy()
     df = gpd.GeoDataFrame(df, geometry="geometry")
     orig_df_save_path = os.path.join(mask_save_path, "valid_img_mask.geojson")
@@ -635,11 +664,14 @@ def evaluate_img_mask_pair(df, mask_save_path, return_df=False):
 
     # Save the GeoDataFrame to a GeoJSON file
     geojson_path = os.path.join(mask_save_path, "evaluated_img_mask_pair.geojson")
-    df.to_file(geojson_path, driver="GeoJSON")
+    df_new.to_file(geojson_path, driver="GeoJSON")
 
     print(f"\nEvaluation complete. {len(deleted_masks)} mask files were deleted.")
     if return_df:
         return df
+
+
+
 
 def show_img_mask_pair(df, path):
     """
