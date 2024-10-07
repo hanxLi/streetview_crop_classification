@@ -10,6 +10,16 @@ from tqdm.notebook import tqdm
 
 # Function to convert an image to LAB, HSV, and stack them with RGB channels
 def generate_stacked_image(image):
+    """
+    Convert an RGB image to a 9-channel image by stacking RGB, LAB, and HSV channels.
+    LAB channels are clamped to avoid negative values in variance calculations.
+    
+    Args:
+        image (np.ndarray): Input RGB image (H, W, 3).
+    
+    Returns:
+        np.ndarray: 9-channel image (H, W, 9).
+    """
     # Split the image into RGB channels
     b_channel, g_channel, r_channel = cv2.split(image)  # Note OpenCV loads as BGR by default
     
@@ -17,16 +27,20 @@ def generate_stacked_image(image):
     lab_image = cv2.cvtColor(image, cv2.COLOR_BGR2Lab)
     l_channel, a_channel, b_lab_channel = cv2.split(lab_image)
     
+    # Normalize LAB channels to [0, 255] (since L is [0, 100] and A/B are [-128, 127])
+    a_channel = a_channel + 128  # Shift A from [-128, 127] to [0, 255]
+    b_lab_channel = b_lab_channel + 128  # Shift B from [-128, 127] to [0, 255]
+    
     # Convert to HSV color space and split into H, S, V channels
     hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     h_channel, s_channel, v_channel = cv2.split(hsv_image)
     
     # Stack all channels together: RGB (R, G, B), LAB (L, A, B), HSV (H, S, V)
     stacked_image = np.stack([r_channel, g_channel, b_channel,  # RGB (0-255 range)
-                              l_channel, a_channel, b_lab_channel,  # LAB (0-255 range)
+                              l_channel, a_channel, b_lab_channel,  # LAB (normalized)
                               h_channel, s_channel, v_channel], axis=2)  # HSV (0-255 range)
-    
     return stacked_image
+
 
 def chip_and_resize(stacked_image, mask, img_name, lbl_name, crop_type, time_of_acquisition, mask_score, chip_size=512,
                      overlap=32, resized_size=224, output_dir=None, threshold=0.8):
@@ -237,7 +251,44 @@ def display_img_lbl_pair(df, idx, save_path):
     plt.show()
 
 
+def calculate_npy_dataset_mean_std(dataframe, image_column='img_chip_path',
+                                    save_path=None, return_value = False):
+    """
+    Calculate the mean and standard deviation for each channel in the dataset using pre-saved .npy files.
+    
+    Args:
+        dataframe (pd.DataFrame): DataFrame containing the paths to the .npy files.
+        image_column (str): The column name in the DataFrame that contains the .npy file paths.
+    
+    Returns:
+        (mean, std): Tuple containing the per-channel mean and standard deviation.
+    """
+    # Initialize lists to store pixel values for each channel
+    pixel_values = [[] for _ in range(9)]  # Assuming 9 channels in the stacked images
 
+    # Iterate through the dataset
+    for npy_path in tqdm(dataframe[image_column]):
+        _path = os.path.join(save_path, npy_path)
+        # Load the stacked image (9-channel) from the .npy file
+        stacked_image = np.load(_path)  # Shape should be (H, W, 9)
 
+        # Reshape the 9-channel image to (num_pixels, 9)
+        flat_image = stacked_image.reshape(-1, 9)
 
+        # Append the pixel values of each channel to the corresponding list
+        for i in range(9):
+            pixel_values[i].extend(flat_image[:, i])
+
+    # Convert pixel values to numpy arrays for easier manipulation
+    pixel_values = [np.array(values) for values in pixel_values]
+
+    # Calculate mean and std for each channel
+    mean = np.array([np.mean(values) for values in pixel_values])
+    std = np.array([np.std(values) for values in pixel_values])
+
+    print(f"Mean of dataset is:\n{mean}")
+    print(f"Std of dataset is:\n{std}")
+
+    if return_value:
+        return mean, std
 
