@@ -5,6 +5,7 @@ import tensorboard
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 from pathlib import Path
+import time
 
 from eval import do_accuracy_evaluation
 from trainval import train, validate
@@ -129,7 +130,8 @@ class ModelCompiler:
 
         # Main training loop
         for epoch in range(resume_epoch or 0, epochs):
-            print(f"[{epoch+1}/{epochs}]")
+            print(f"----------------------- [{epoch+1}/{epochs}] -----------------------")
+            epoch_start = time.time()
             train(trainDataset, self.model, criterion, optimizer, scheduler,
                    trainLoss=train_loss, device=self.device)
             validate(valDataset, self.model, criterion, valLoss=val_loss,
@@ -144,9 +146,10 @@ class ModelCompiler:
                 writer.add_scalar('Learning Rate', scheduler.get_last_lr()[0], epoch)
 
             # Save checkpoint every 2 epochs
-            if (epoch + 1) % 2 == 0:
+            if (epoch + 1) % 5 == 0:
                 self.save_checkpoint(optimizer, scheduler, epoch + 1)
-
+            epoch_duration = time.time() - epoch_start
+            print(f"Epoch {epoch+1} completed in {epoch_duration:.2f} seconds")
         if writer:
             writer.close()
         print(f"-------------------------- Training finished in {(datetime.now() - start).seconds}s --------------------------")
@@ -185,13 +188,13 @@ class ModelCompiler:
         """
         lr_policy = lr_policy.lower()
         if lr_policy == "steplr":
-            return torch.optim.lr_scheduler.StepLR(optimizer, step_size=kwargs.get('step_size', 10), gamma=kwargs.get('gamma', 0.5))
+            return torch.optim.lr_scheduler.StepLR(optimizer, step_size=kwargs.get('step_size', 10), gamma=kwargs.get('gamma', 0.1))
         elif lr_policy == "multisteplr":
-            return torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=kwargs.get('milestones', [10, 20]), gamma=kwargs.get('gamma', 0.5))
+            return torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=kwargs.get('milestones', [10, 20]), gamma=kwargs.get('gamma', 0.1))
         else:
             raise ValueError(f"Unsupported learning rate policy: {lr_policy}")
         
-    def accuracy_evaluation(self, eval_dataset, filename):
+    def accuracy_evaluation(self, eval_dataset, filename, num_classes, class_mapping):
         """
         Evaluate the accuracy of the model on the provided evaluation dataset.
 

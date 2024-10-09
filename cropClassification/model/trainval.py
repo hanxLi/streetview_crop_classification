@@ -33,14 +33,11 @@ def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=[], 
         optimizer.zero_grad()  # Clear gradients
         loss.backward()        # Backpropagation
         optimizer.step()       # Update weights
-
-        # Update learning rate if a scheduler is provided
-        if scheduler is not None:
-            scheduler.step()
+            
 
         # Print progress every 10 batches
-        if batch_idx % 10 == 0:
-            print(f'Batch {batch_idx}/{len(trainData)}: Loss {loss.item():.4f}')
+        # if batch_idx % 10 == 0:
+        #     print(f'Batch {batch_idx}/{len(trainData)}: Loss {loss.item():.4f}')
 
         i += 1
 
@@ -54,11 +51,13 @@ def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=[], 
 
     # Print the learning rate if a scheduler is provided
     if scheduler is not None:
-        current_lr = optimizer.param_groups[0]['lr']
-        print(f'Current Learning Rate: {current_lr:.6f}')
+        scheduler.step()
+
+    current_lr = optimizer.param_groups[0]['lr']
+    print(f'Current Learning Rate: {current_lr:.6f}')
 
 
-def validate(valData, model, criterion, buffer=None, valLoss=[], device='cpu'):
+def validate(valData, model, criterion, valLoss=[], device='cpu'):
     """
     Validate the model.
 
@@ -87,20 +86,14 @@ def validate(valData, model, criterion, buffer=None, valLoss=[], device='cpu'):
             # Forward pass
             out = model(img)
 
-            # Apply buffer to mask the loss computation if buffer is provided
-            if buffer:
-                # Crop the center region to exclude the buffer
-                out = out[:, :, buffer:-buffer, buffer:-buffer]
-                label = label[:, buffer:-buffer, buffer:-buffer]
-
             # Compute loss
             loss = criterion(out, label)
             epoch_loss += loss.item()
             i += 1
 
             # Print validation progress every 10 batches
-            if batch_idx % 10 == 0:
-                print(f'Batch {batch_idx}/{len(valData)}: Validation Loss {loss.item():.4f}')
+            # if batch_idx % 10 == 0:
+            #     print(f'Batch {batch_idx}/{len(valData)}: Validation Loss {loss.item():.4f}')
 
     # Calculate the average validation loss
     avg_val_loss = epoch_loss / i

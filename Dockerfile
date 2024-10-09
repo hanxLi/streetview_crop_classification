@@ -1,12 +1,8 @@
-# Dockerfile adapted from https://github.com/peasant98/SAM2-Docker 
-# and modified for additional packages
+# Use an NVIDIA CUDA image with CUDA 12.1 as the base
+FROM nvidia/cuda:12.1.0-devel-ubuntu20.04
 
-# Use an NVIDIA CUDA image as the base
-FROM nvidia/cuda:12.6.0-devel-ubuntu20.04
-
-# Set up environment variables using the new format
+# Set up environment variables
 ENV DEBIAN_FRONTEND=noninteractive
-
 ENV PATH="${PATH}:/home/user/.local/bin"
 ENV LANG=C.UTF-8
 
@@ -49,21 +45,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libproj-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python 3.11 and set it as the default version
+# Install Python 3.10 and set it as the default version
 RUN apt-get update \
     && apt-get install -y software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa -y \
     && apt-get update \
-    && apt-get install -y python3.11 python3.11-venv python3.11-dev python3.11-tk \
+    && apt-get install -y python3.10 python3.10-venv python3.10-dev python3.10-tk \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.8 1 \
-    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 2
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 2
 
-# Install pip for Python 3.11
-RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+# Install pip for Python 3.10
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
 
 # Install Fiona and other Python packages via pip
-RUN python3.11 -m pip install --upgrade pip \
-    && python3.11 -m pip install \
+RUN python3.10 -m pip install --upgrade pip \
+    && python3.10 -m pip install \
         fiona \
         tensorboard \
         seaborn \
@@ -79,6 +75,9 @@ RUN python3.11 -m pip install --upgrade pip \
         opencv-python-headless \
         GDAL \
         jupyterlab
+
+# Install PyTorch, Torchvision, and Torchaudio for CUDA 12.1
+RUN python3.10 -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 # Set the working directory to the home directory of the user
 WORKDIR /home/user
