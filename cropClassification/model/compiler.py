@@ -86,7 +86,7 @@ class ModelCompiler:
                     p.requires_grad = False
 
     def fit(self, trainDataset, valDataset, epochs, optimizer_name, lr_init, lr_policy, 
-            criterion, momentum=None, resume=False, resume_epoch=None, log=True, **kwargs):
+        criterion, momentum=None, resume=False, resume_epoch=None, log=True, return_loss=False,**kwargs):
         """
         Train the model with the given datasets, criterion, optimizer, and learning rate scheduler.
         
@@ -132,28 +132,41 @@ class ModelCompiler:
         for epoch in range(resume_epoch or 0, epochs):
             print(f"----------------------- [{epoch+1}/{epochs}] -----------------------")
             epoch_start = time.time()
-            train(trainDataset, self.model, criterion, optimizer, scheduler,
-                   trainLoss=train_loss, device=self.device)
-            validate(valDataset, self.model, criterion, valLoss=val_loss,
-                      device=self.device)
+
+            # Train for one epoch
+            train_loss_epoch = train(trainDataset, self.model, criterion, optimizer, scheduler, trainLoss=train_loss, device=self.device)
+            train_loss.append(train_loss_epoch)
+            
+            # Validate after each epoch
+            val_loss_epoch = validate(valDataset, self.model, criterion, valLoss=val_loss, device=self.device)
+            val_loss.append(val_loss_epoch)
 
             # Step the scheduler
             if scheduler:
                 scheduler.step()
 
+            # Log training and validation losses to TensorBoard
+            if log:
+                writer.add_scalar('Loss/Train', train_loss_epoch, epoch)
+                writer.add_scalar('Loss/Validation', val_loss_epoch, epoch)
+
             # Log learning rate if logging is enabled
             if log and scheduler:
                 writer.add_scalar('Learning Rate', scheduler.get_last_lr()[0], epoch)
 
-            # Save checkpoint every 2 epochs
+            # Save checkpoint every 5 epochs
             if (epoch + 1) % 5 == 0:
                 self.save_checkpoint(optimizer, scheduler, epoch + 1)
+
             epoch_duration = time.time() - epoch_start
             print(f"Epoch {epoch+1} completed in {epoch_duration:.2f} seconds")
+        
         if writer:
             writer.close()
+        
         print(f"-------------------------- Training finished in {(datetime.now() - start).seconds}s --------------------------")
-        return train_loss, val_loss
+        if return_loss:
+            return train_loss, val_loss
 
     def get_optimizer(self, optimizer_name, lr_init, momentum=None):
         """

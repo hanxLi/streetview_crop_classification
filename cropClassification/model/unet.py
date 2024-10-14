@@ -67,6 +67,36 @@ class OutConv(nn.Module):
 
     def forward(self, x):
         return self.conv(x)
+class DoubleConvDrop(nn.Module):
+    """(convolution => [BN] => ReLU => Dropout) * 2"""
+
+    def __init__(self, in_channels, out_channels, drop_rate):
+        super().__init__()
+        self.double_conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(p=drop_rate)
+        )
+
+    def forward(self, x):
+        return self.double_conv(x)
+
+class DownDrop(nn.Module):
+    """Downscaling with maxpool then double conv"""
+
+    def __init__(self, in_channels, out_channels, drop_rate):
+        super().__init__()
+        self.maxpool_conv = nn.Sequential(
+            nn.MaxPool2d(2),
+            DoubleConvDrop(in_channels, out_channels, drop_rate)
+        )
+
+    def forward(self, x):
+        return self.maxpool_conv(x)
     
 ###############################################################################
 
@@ -93,6 +123,45 @@ class originalUNet(nn.Module):
         self.up3 = Up(256, 128 // factor, bilinear)
         self.up4 = Up(128, 64, bilinear)
         self.outc = OutConv(64, n_classes)
+
+    def forward(self, x):
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+        x = self.up1(x5, x4)
+        x = self.up2(x, x3)
+        x = self.up3(x, x2)
+        x = self.up4(x, x1)
+        logits = self.outc(x)
+        return logits
+
+class encodeDropUNet(nn.Module):
+    def __init__(self, n_channels, n_classes, drop_rate, bilinear=True):
+        super(encodeDropUNet, self).__init__()
+        self.n_channels = n_channels
+        self.n_classes = n_classes
+        self.bilinear = bilinear
+        self.drop_rate = drop_rate
+
+        if bilinear:
+            factor = 2 
+        else:
+            factor = 1
+
+        self.inc = DoubleConvDrop(n_channels, 64, drop_rate)
+        self.down1 = DownDrop(64, 128, drop_rate)
+        self.down2 = DownDrop(128, 256, drop_rate)
+        self.down3 = DownDrop(256, 512, drop_rate)
+        self.down4 = DownDrop(512, 1024 // factor, drop_rate)
+        self.up1 = Up(1024, 512 // factor, bilinear)
+        self.up2 = Up(512, 256 // factor, bilinear)
+        self.up3 = Up(256, 128 // factor, bilinear)
+        self.up4 = Up(128, 64, bilinear)
+        self.outc = OutConv(64, n_classes)
+
+
 
     def forward(self, x):
         x1 = self.inc(x)

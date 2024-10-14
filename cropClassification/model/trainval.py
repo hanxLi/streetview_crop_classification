@@ -1,7 +1,7 @@
 from torch.autograd import Variable
 import torch
 
-def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=[], device='cpu'):
+def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=None, device='cpu'):
     """
     Train the model for one epoch.
     
@@ -10,9 +10,12 @@ def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=[], 
         model (torch.nn.Module): The model to train.
         criterion (torch.nn.Module): The loss function.
         optimizer (torch.optim.Optimizer): The optimizer for model parameters.
-        scheduler (torch.optim.lr_scheduler, optional): Learning rate scheduler.
-        trainLoss (list): List to record average loss per epoch.
+        scheduler (torch.optim.lr_scheduler, optional): Learning rate scheduler (handled externally).
+        trainLoss (list, optional): List to record average loss per epoch.
         device (str): Device to use ('cpu', 'cuda', 'mps').
+    
+    Returns:
+        float: Average loss for the epoch.
     """
 
     model.train()  # Set model to training mode
@@ -21,8 +24,8 @@ def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=[], 
 
     for batch_idx, (img, label) in enumerate(trainData):
         # Transfer data to the appropriate device
-        img = Variable(img).to(device)
-        label = Variable(label).to(device)
+        img = img.to(device)
+        label = label.to(device)
 
         # Forward pass
         out = model(img)
@@ -33,11 +36,6 @@ def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=[], 
         optimizer.zero_grad()  # Clear gradients
         loss.backward()        # Backpropagation
         optimizer.step()       # Update weights
-            
-
-        # Print progress every 10 batches
-        # if batch_idx % 10 == 0:
-        #     print(f'Batch {batch_idx}/{len(trainData)}: Loss {loss.item():.4f}')
 
         i += 1
 
@@ -45,28 +43,26 @@ def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=[], 
     avg_epoch_loss = epoch_loss / i
     print(f'Epoch Training Loss: {avg_epoch_loss:.4f}')
 
-    # Save the average loss for the epoch
+    # Save the average loss for the epoch if trainLoss list is provided
     if trainLoss is not None:
         trainLoss.append(avg_epoch_loss)
-
-    # Print the learning rate if a scheduler is provided
-    if scheduler is not None:
-        scheduler.step()
 
     current_lr = optimizer.param_groups[0]['lr']
     print(f'Current Learning Rate: {current_lr:.6f}')
 
+    return avg_epoch_loss
 
-def validate(valData, model, criterion, valLoss=[], device='cpu'):
+
+
+def validate(valData, model, criterion, valLoss=None, device='cpu'):
     """
-    Validate the model.
-
+    Validate the model for one epoch.
+    
     Args:
         valData (DataLoader): DataLoader for validation batches.
         model (torch.nn.Module): Trained model for validation.
         criterion (torch.nn.Module): Function to calculate loss.
-        buffer (int, optional): Buffer added to the targeted grid when creating dataset.
-        valLoss (list): List to record average loss for each epoch.
+        valLoss (list, optional): List to record average loss for each epoch.
         device (str): Device to use ('cpu', 'cuda', 'mps').
     
     Returns:
@@ -91,15 +87,11 @@ def validate(valData, model, criterion, valLoss=[], device='cpu'):
             epoch_loss += loss.item()
             i += 1
 
-            # Print validation progress every 10 batches
-            # if batch_idx % 10 == 0:
-            #     print(f'Batch {batch_idx}/{len(valData)}: Validation Loss {loss.item():.4f}')
-
     # Calculate the average validation loss
     avg_val_loss = epoch_loss / i
     print(f'Validation Loss: {avg_val_loss:.4f}')
 
-    # Store the average loss for this epoch
+    # Store the average loss for this epoch if valLoss list is provided
     if valLoss is not None:
         valLoss.append(avg_val_loss)
 
