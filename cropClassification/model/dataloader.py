@@ -1,25 +1,30 @@
-from torch.utils.data import Dataset
+import torch
+import torch.nn.functional as F
 import os
 import numpy as np
 import cv2
-import torch
+from torch.utils.data import Dataset
 from torchvision import transforms
 
 class RoadsideCropImageDataset(Dataset):
-    def __init__(self, dataframe, root_dir, usage='train', mean=None, std=None):
+    def __init__(self, dataframe, root_dir, usage='train', mean=None, std=None, use_ancillary=False, ancillary_classes=3):
         """
         Args:
-            dataframe (pd.DataFrame): DataFrame containing image paths and labels.
+            dataframe (pd.DataFrame): DataFrame containing image paths, labels, and ancillary data.
             root_dir (string): Directory with all the images and masks.
             usage (string): 'train' or 'val'. Determines if transformations are applied.
             mean (list, optional): Mean for normalization.
             std (list, optional): Standard deviation for normalization.
+            use_ancillary (bool, optional): Whether to include ancillary data or not.
+            ancillary_classes (int): Number of classes in the ancillary data (for one-hot encoding).
         """
         self.dataframe = dataframe
         self.root_dir = root_dir
         self.usage = usage
         self.mean = mean if mean is not None else [0.5] * 9  # Default mean for 9 channels
         self.std = std if std is not None else [0.5] * 9    # Default std for 9 channels
+        self.use_ancillary = use_ancillary
+        self.ancillary_classes = ancillary_classes  # Number of classes in the ancillary data
 
         # Automatically build the transform pipeline
         self.transform = self.build_transforms()
@@ -46,13 +51,25 @@ class RoadsideCropImageDataset(Dataset):
         # Return the composed transforms
         return transforms.Compose(transform_list)
 
+    def one_hot_encode(self, label):
+        """
+        One-hot encode the given label based on the number of ancillary classes.
+
+        Args:
+            label (int): The categorical label to encode.
+
+        Returns:
+            torch.Tensor: One-hot encoded vector.
+        """
+        return F.one_hot(torch.tensor(label), num_classes=self.ancillary_classes).float()
+
     def __len__(self):
         """Return the total number of samples."""
         return len(self.dataframe)
 
     def __getitem__(self, idx):
         """
-        Load the image and the corresponding mask (label), apply transformations if necessary,
+        Load the image, mask (label), and optional ancillary data, apply transformations if necessary,
         and return them as tensors.
         """
         # Get the image and mask paths
@@ -75,4 +92,12 @@ class RoadsideCropImageDataset(Dataset):
         if self.transform:
             image = self.transform(image)
 
-        return image, mask
+        # Check if ancillary data should be included
+        if self.use_ancillary:
+            # Load ancillary data from the dataframe
+            # Assuming the ancillary data is stored as a categorical integer (e.g., 0, 1, 2)
+            ancillary_label = self.dataframe.iloc[idx]['crop_stage_numeric']  # Categorical data (e.g., 0, 1, 2)
+            ancillary_data = self.one_hot_encode(ancillary_label)  # One-hot encode
+            return image, ancillary_data, mask
+        else:
+            return image, mask

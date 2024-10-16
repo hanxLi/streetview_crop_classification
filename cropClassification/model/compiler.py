@@ -86,7 +86,8 @@ class ModelCompiler:
                     p.requires_grad = False
 
     def fit(self, trainDataset, valDataset, epochs, optimizer_name, lr_init, lr_policy, 
-        criterion, momentum=None, resume=False, resume_epoch=None, log=True, return_loss=False,**kwargs):
+            criterion, momentum=None, resume=False, resume_epoch=None, log=True, return_loss=False, 
+            use_ancillary=False, **kwargs):
         """
         Train the model with the given datasets, criterion, optimizer, and learning rate scheduler.
         
@@ -102,6 +103,7 @@ class ModelCompiler:
             resume (bool, optional): Whether to resume training from a checkpoint.
             resume_epoch (int, optional): Epoch to resume from.
             log (bool, optional): Enable TensorBoard logging.
+            use_ancillary (bool, optional): Whether to use ancillary data or not.
             **kwargs: Additional arguments for learning rate scheduler.
         """
         self.model_dir = f"{self.working_dir}/{self.out_dir}/{self.model_name}_ep{epochs}"
@@ -134,11 +136,13 @@ class ModelCompiler:
             epoch_start = time.time()
 
             # Train for one epoch
-            train_loss_epoch = train(trainDataset, self.model, criterion, optimizer, scheduler, trainLoss=train_loss, device=self.device)
+            train_loss_epoch = train(trainDataset, self.model, criterion, optimizer, scheduler, 
+                                     trainLoss=train_loss, device=self.device, use_ancillary=use_ancillary)
             train_loss.append(train_loss_epoch)
             
             # Validate after each epoch
-            val_loss_epoch = validate(valDataset, self.model, criterion, valLoss=val_loss, device=self.device)
+            val_loss_epoch = validate(valDataset, self.model, criterion, valLoss=val_loss, 
+                                      device=self.device, use_ancillary=use_ancillary)
             val_loss.append(val_loss_epoch)
 
             # Step the scheduler

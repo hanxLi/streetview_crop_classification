@@ -175,3 +175,67 @@ class encodeDropUNet(nn.Module):
         x = self.up4(x, x1)
         logits = self.outc(x)
         return logits
+
+class UNetWithAncillary(nn.Module):
+    def __init__(self, n_channels, n_classes, ancillary_data_dim, bilinear=True):
+        super(UNetWithAncillary, self).__init__()
+
+        self.n_channels = n_channels
+        self.n_classes = n_classes
+        self.bilinear = bilinear
+
+        if bilinear:
+            factor = 2
+        else:
+            factor = 1
+
+        # UNet Encoder (downsampling path)
+        self.inc = DoubleConv(n_channels, 64)
+        self.down1 = Down(64, 128)
+        self.down2 = Down(128, 256)
+        self.down3 = Down(256, 512)
+        self.down4 = Down(512, 1024 // factor)
+
+        # UNet Decoder (upsampling path)
+        self.up1 = Up(1024, 512 // factor, bilinear)  # Concatenate ancillary data in the bottleneck
+        self.up2 = Up(512, 256 // factor, bilinear)
+        self.up3 = Up(256, 128 // factor, bilinear)
+        self.up4 = Up(128, 64, bilinear)
+        self.outc = OutConv(64, n_classes)
+
+        # Process ancillary data (fully connected layer)
+        self.ancillary_fc = nn.Sequential(
+            nn.Linear(ancillary_data_dim, 1024 // factor),
+            nn.ReLU(inplace=True),
+            nn.Linear(1024 // factor, 1024 // factor),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x, ancillary_data):
+        # UNet encoding path (downsampling)
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+
+        # Process ancillary data
+        ancillary_processed = self.ancillary_fc(ancillary_data)  # Shape: [batch_size, 1024 // factor]
+        ancillary_processed = ancillary_processed.unsqueeze(2).unsqueeze(3)  # Add spatial dimensions
+        ancillary_processed = ancillary_processed.expand_as(x5)  # Expand to match the size of x5
+        # print(f"Shape of ancillary_processed: {ancillary_processed.shape}")
+
+        # Concatenate ancillary data with the bottleneck feature map
+        x5_with_ancillary = torch.cat([x5, ancillary_processed], dim=1)
+        # print(f"x5 shape: {x5.shape}")
+        # print(f"ancillary_processed shape: {ancillary_processed.shape}")
+        # print(f"x5_with_ancillary shape: {x5_with_ancillary.shape}")
+
+
+        # UNet decoding path (upsampling)
+        x = self.up1(x5_with_ancillary, x4)
+        x = self.up2(x, x3)
+        x = self.up3(x, x2)
+        x = self.up4(x, x1)
+        logits = self.outc(x)
+        return logits

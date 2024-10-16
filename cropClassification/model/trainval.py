@@ -1,7 +1,7 @@
 from torch.autograd import Variable
 import torch
 
-def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=None, device='cpu'):
+def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=None, device='cpu', use_ancillary=False):
     """
     Train the model for one epoch.
     
@@ -13,6 +13,7 @@ def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=None
         scheduler (torch.optim.lr_scheduler, optional): Learning rate scheduler (handled externally).
         trainLoss (list, optional): List to record average loss per epoch.
         device (str): Device to use ('cpu', 'cuda', 'mps').
+        use_ancillary (bool): Whether to use ancillary data.
     
     Returns:
         float: Average loss for the epoch.
@@ -22,13 +23,23 @@ def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=None
     epoch_loss = 0
     i = 0
 
-    for batch_idx, (img, label) in enumerate(trainData):
+    for batch_idx, batch in enumerate(trainData):
+        if use_ancillary:
+            img, ancillary_data, label = batch
+            ancillary_data = ancillary_data.to(device)
+        else:
+            img, label = batch  # No ancillary data
+
         # Transfer data to the appropriate device
         img = img.to(device)
         label = label.to(device)
 
         # Forward pass
-        out = model(img)
+        if use_ancillary:
+            out = model(img, ancillary_data)  # Pass both image and ancillary data
+        else:
+            out = model(img)  # Pass only image
+
         loss = criterion(out, label)  # Compute loss
         epoch_loss += loss.item()
 
@@ -54,7 +65,8 @@ def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=None
 
 
 
-def validate(valData, model, criterion, valLoss=None, device='cpu'):
+
+def validate(valData, model, criterion, valLoss=None, device='cpu', use_ancillary=False):
     """
     Validate the model for one epoch.
     
@@ -64,6 +76,7 @@ def validate(valData, model, criterion, valLoss=None, device='cpu'):
         criterion (torch.nn.Module): Function to calculate loss.
         valLoss (list, optional): List to record average loss for each epoch.
         device (str): Device to use ('cpu', 'cuda', 'mps').
+        use_ancillary (bool): Whether to use ancillary data.
     
     Returns:
         float: The average validation loss over the epoch.
@@ -74,13 +87,22 @@ def validate(valData, model, criterion, valLoss=None, device='cpu'):
     i = 0
 
     with torch.no_grad():  # Disable gradients during validation
-        for batch_idx, (img, label) in enumerate(valData):
+        for batch_idx, batch in enumerate(valData):
+            if use_ancillary:
+                img, ancillary_data, label = batch
+                ancillary_data = ancillary_data.to(device)
+            else:
+                img, label = batch  # No ancillary data
+
             # Transfer data to the appropriate device
             img = img.to(device)
             label = label.to(device)
 
             # Forward pass
-            out = model(img)
+            if use_ancillary:
+                out = model(img, ancillary_data)  # Pass both image and ancillary data
+            else:
+                out = model(img)  # Pass only image
 
             # Compute loss
             loss = criterion(out, label)

@@ -26,7 +26,7 @@ def load_and_convert_image(df, idx, color_space):
     converted_image : np.ndarray
         The image converted to the requested color space.
     """
-    path = df.loc[idx, "save_path"].replace("/home/hanxli/data/", "/Users/steeeve/Documents/csiss/")
+    path = df.loc[idx, "save_path"].replace("/home/hanxli/", "/workspace/")
     imgdata = cv2.imread(path)
     im_rgb = cv2.cvtColor(imgdata, cv2.COLOR_BGR2RGB)
     
@@ -301,7 +301,7 @@ def normalized_grayscale_convert(df, idx, threshold=None):
     min_threshold, max_threshold = threshold
 
     # Load image and extract metadata for title
-    path = df.loc[idx, "save_path"].replace("/home/hanxli/data/", "/Users/steeeve/Documents/csiss/")
+    path = df.loc[idx, "save_path"].replace("/home/hanxli/", "/workspace/")
     _time = df.loc[idx, "Timestamp"]
     title_text = f"{df.loc[idx, 'crop_type']} | {df.loc[idx, 'Name']} | "\
                  f"{_time.year}/{_time.month}/{_time.day} | "\
