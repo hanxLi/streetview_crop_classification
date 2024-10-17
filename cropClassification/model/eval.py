@@ -164,45 +164,54 @@ class Evaluator(object):
 
 def do_accuracy_evaluation(model, dataloader, num_classes, class_mapping, out_name=None):
     """
-    Evaluate the performance of a trained model on a dataset and calculate various metrics.
-    
+    Evaluate the performance of a trained model on a dataset with or without ancillary data 
+    and calculate various metrics.
+
     Args:
         model (torch.nn.Module): The trained model to be evaluated.
         dataloader (torch.utils.data.DataLoader): The dataloader for the evaluation dataset.
         num_classes (int): The number of target classes in the dataset.
         class_mapping (dict): A dictionary mapping class indices to class names.
-        out_name (str, optional): The path where the evaluation metrics are to be saved. If None, 
-            metrics are not saved. Defaults to None.
-    
+        out_name (str, optional): The path where the evaluation metrics are to be saved. 
+                                  If None, metrics are not saved. Defaults to None.
+
     Returns:
         dict: A dictionary containing the calculated metrics including Overall Accuracy, 
-            Mean Accuracy, Mean IoU (Intersection over Union), mean Precision, and mean Recall.
+              Mean Accuracy, Mean IoU (Intersection over Union), mean Precision, and mean Recall.
     """
     evaluator = Evaluator(num_classes)
-
     model.eval()
 
     # Support for CUDA, MPS, and CPU
     device = torch.device("cuda:0" if torch.cuda.is_available() else 
                           "mps" if torch.backends.mps.is_available() else "cpu")
-
     model = model.to(device)
 
     with torch.no_grad():
         for data in dataloader:
-            images, labels = data
-            images = images.to(device)
-            labels = labels.to(device)
+            # Dynamically check if ancillary data is provided
+            if len(data) == 3:
+                images, labels, ancillary_data = data
+                ancillary_data = ancillary_data.to(device)
+                outputs = model(images.to(device), ancillary_data)
+            elif len(data) == 2:
+                images, labels = data
+                outputs = model(images.to(device))
+            else:
+                raise ValueError("Dataloader must return either 2 or 3 elements (images, labels, [ancillary_data]).")
 
-            outputs = model(images)
+            # Handle NaN outputs
             if torch.isnan(outputs).any():
                 print("NaN value found in model outputs!")
-            outputs = F.softmax(outputs, 1)
+
+            # Calculate softmax probabilities and predictions
+            outputs = F.softmax(outputs, dim=1)
             _, preds = torch.max(outputs.data, 1)
 
+            # Add the batch to the evaluator
             evaluator.add_batch(labels.cpu().numpy(), preds.cpu().numpy())
 
-    # calculate evaluation metrics
+    # Calculate evaluation metrics
     overall_accuracy = evaluator.overall_accuracy()
     classwise_overal_accuracy = evaluator.classwise_overal_accuracy()
     mean_accuracy = np.nanmean(classwise_overal_accuracy)
@@ -224,14 +233,14 @@ def do_accuracy_evaluation(model, dataloader, num_classes, class_mapping, out_na
         "Mean F1 Score": mean_f1_score
     }
 
-    # print confusion matrix
+    # Plot confusion matrix
     evaluator.plot_confusion_matrix(class_mapping)
 
+    # Save metrics if out_name is provided
     if out_name:
         with open(out_name, mode="w", newline='') as file:
             writer = csv.writer(file)
             writer.writerow(["Metric", "Value"])
-
             for metric_name, metric_value in metrics.items():
                 writer.writerow([metric_name, metric_value])
         
@@ -239,7 +248,6 @@ def do_accuracy_evaluation(model, dataloader, num_classes, class_mapping, out_na
         with open(class_metrics_out_name, mode="w", newline='') as file:
             writer = csv.writer(file)
             writer.writerow(["Class", "Accuracy", "IoU", "Precision", "Recall", "F1 Score"])
-
             for i in range(1, evaluator.num_class):
                 class_name = class_mapping[i]
                 writer.writerow([class_name, classwise_overal_accuracy[i], IoU[i], 

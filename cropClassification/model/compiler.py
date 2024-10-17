@@ -22,7 +22,7 @@ class ModelCompiler:
         freeze_params (list, optional): List of indices for parameters to keep frozen.
     """
     
-    def __init__(self, model, params_init=None, freeze_params=None):
+    def __init__(self, model, params_init=None, freeze_params=None, resume_training=False, optimizer=None, scheduler=None):
         self.working_dir = os.getcwd()
         self.out_dir = "outputs"
         self.model = model
@@ -30,61 +30,109 @@ class ModelCompiler:
         self.gpu = torch.cuda.is_available()
         self.mps = torch.backends.mps.is_available()
 
-        # Determine which device to use: CUDA, MPS, or CPU
+        # Determine the device to use: CUDA, MPS, or CPU
         if self.gpu:
             print('---------- GPU (CUDA) available ----------')
             self.device = torch.device('cuda')
-            self.model = self.model.to(self.device)
         elif self.mps:
             print('---------- MPS available ----------')
-            print('Warning: MPS is still under optimization and might have performance issues.')
+            print('Warning: MPS may have performance issues.')
             self.device = torch.device('mps')
-            self.model = self.model.to(self.device)
         else:
             print('---------- Using CPU ----------')
-            print('Using CUDA or MPS is recommended for better performance.')
             self.device = torch.device('cpu')
-            self.model = self.model.to(self.device)
+
+        self.model = self.model.to(self.device)
 
         # Load initial model parameters if provided
         if params_init:
-            self.load_params(params_init, freeze_params)
+            self.load_params(params_init, freeze_params, resume_training, optimizer, scheduler)
 
-        # Count and display trainable parameters
+        # Display the total number of trainable parameters
         num_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         print(f"Total number of trainable parameters: {num_params / 1e6:.1f}M")
-        
-        if params_init:
-            print(f"---------- Pre-trained {self.model_name} model compiled successfully ----------")
-        else:
-            print(f"---------- {self.model_name} model compiled successfully ----------")
-    
-    def load_params(self, dir_params, freeze_params=None):
+
+    def load_params(self, dir_params, freeze_params=None, resume_training=False, optimizer=None, scheduler=None):
         """
-        Load model parameters from a checkpoint file and freeze specified layers if needed.
-        
+        Load model parameters from a checkpoint file and optionally load optimizer/scheduler states.
+
         Args:
             dir_params (str): Path to the checkpoint file containing the model parameters.
             freeze_params (list, optional): List of parameter indices to freeze.
+            resume_training (bool, optional): Whether to load optimizer and scheduler states.
+            optimizer (torch.optim.Optimizer, optional): Optimizer instance to load state into.
+            scheduler (torch.optim.lr_scheduler._LRScheduler, optional): Scheduler instance to load state into.
         """
-        params_init = torch.load(dir_params)
-        model_dict = self.model.state_dict()
+        print(f"Loading model parameters from: {dir_params}")
 
-        # Strip 'module.' from keys if the checkpoint was trained with DataParallel
-        if "module" in list(params_init.keys())[0]:
-            params_init = {k[7:]: v.cpu() for k, v in params_init.items() if k[7:] in model_dict}
-        else:
-            params_init = {k: v.cpu() for k, v in params_init.items() if k in model_dict}
+        # Load checkpoint safely, mapping to CPU to avoid device conflicts
+        checkpoint = torch.load(dir_params, map_location=torch.device('cpu'))
 
-        model_dict.update(params_init)
-        self.model.load_state_dict(model_dict)
+        # Load the state_dict for the model
+        model_state_dict = checkpoint.get('state_dict', checkpoint)
 
-        # Optionally freeze layers
+        # Handle DataParallel models by removing 'module.' prefix from keys
+        if any(key.startswith("module.") for key in model_state_dict.keys()):
+            model_state_dict = {k[7:]: v for k, v in model_state_dict.items()}
+
+        # Load the state_dict into the model
+        self.model.load_state_dict(model_state_dict, strict=False)
+
+        # Move the model to the correct device
+        self.model = self.model.to(self.device)
+
+        # Optionally freeze specific parameters
         if freeze_params:
-            for i, p in enumerate(self.model.parameters()):
+            for i, param in enumerate(self.model.parameters()):
                 if i in freeze_params:
-                    p.requires_grad = False
+                    param.requires_grad = False
 
+        print("Model parameters loaded successfully.")
+
+        # Load optimizer and scheduler states if resuming training
+        if resume_training and optimizer:
+            if 'optimizer' in checkpoint:
+                print("Loading optimizer state...")
+                optimizer.load_state_dict(checkpoint['optimizer'])
+            else:
+                print("Warning: Optimizer state not found in the checkpoint.")
+
+            if scheduler and 'scheduler' in checkpoint:
+                print("Loading scheduler state...")
+                scheduler.load_state_dict(checkpoint['scheduler'])
+
+    def resume_checkpoint(self, optimizer, scheduler, resume_epoch):
+        """
+        Resume training from a checkpoint.
+
+        Args:
+            optimizer (torch.optim.Optimizer): Optimizer instance.
+            scheduler (torch.optim.lr_scheduler._LRScheduler): Scheduler instance.
+            resume_epoch (int): Epoch to resume from.
+
+        Returns:
+            int: The epoch to resume training from.
+        """
+        checkpoint_path = self.checkpoint_dir / f"{resume_epoch}_checkpoint.pth.tar"
+        
+        if checkpoint_path.exists():
+            print(f"Resuming from checkpoint: {checkpoint_path}")
+            
+            # Load the checkpoint
+            checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
+            
+            # Load model, optimizer, and scheduler states
+            self.model.load_state_dict(checkpoint["state_dict"])
+            if optimizer:
+                optimizer.load_state_dict(checkpoint["optimizer"])
+            if scheduler:
+                scheduler.load_state_dict(checkpoint["scheduler"])
+            
+            # Return the epoch to resume from
+            return checkpoint["epoch"]
+        else:
+            raise FileNotFoundError(f"No checkpoint found at {checkpoint_path}")
+    
     def fit(self, trainDataset, valDataset, epochs, optimizer_name, lr_init, lr_policy, 
             criterion, momentum=None, resume=False, resume_epoch=None, log=True, return_loss=False, 
             use_ancillary=False, **kwargs):
