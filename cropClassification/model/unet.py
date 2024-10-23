@@ -67,19 +67,14 @@ class OutConv(nn.Module):
     def forward(self, x):
         return self.conv(x)
 
+
 class FiLM(nn.Module):
     def __init__(self, input_dim, feature_map_channels):
-        """
-        FiLM Layer: Computes gamma and beta based on ancillary input.
-        """
         super(FiLM, self).__init__()
         self.gamma = nn.Linear(input_dim, feature_map_channels)
         self.beta = nn.Linear(input_dim, feature_map_channels)
 
     def forward(self, feature_map, ancillary_data):
-        """
-        Apply FiLM modulation: gamma * feature_map + beta
-        """
         gamma = self.gamma(ancillary_data).unsqueeze(2).unsqueeze(3)  # [B, C, 1, 1]
         beta = self.beta(ancillary_data).unsqueeze(2).unsqueeze(3)    # [B, C, 1, 1]
         return gamma * feature_map + beta
@@ -115,7 +110,6 @@ class DownDrop(nn.Module):
 
     def forward(self, x):
         return self.maxpool_conv(x)
-    
 ###############################################################################
 
 class originalUNet(nn.Module):
@@ -179,8 +173,6 @@ class encodeDropUNet(nn.Module):
         self.up4 = Up(128, 64, bilinear)
         self.outc = OutConv(64, n_classes)
 
-
-
     def forward(self, x):
         x1 = self.inc(x)
         x2 = self.down1(x1)
@@ -193,63 +185,3 @@ class encodeDropUNet(nn.Module):
         x = self.up4(x, x1)
         logits = self.outc(x)
         return logits
-
-class UNetWithUncertainty(nn.Module):
-    def __init__(self, n_channels, n_classes, ancillary_data_dim, bilinear=True):
-        super(UNetWithUncertainty, self).__init__()
-
-        self.n_channels = n_channels
-        self.n_classes = n_classes
-        self.bilinear = bilinear
-        factor = 2 if bilinear else 1
-
-        # U-Net Encoder (downsampling)
-        self.inc = DoubleConv(n_channels, 64)
-        self.down1 = Down(64, 128)
-        self.down2 = Down(128, 256)
-        self.down3 = Down(256, 512)
-        self.down4 = Down(512, 1024 // factor)
-
-        # U-Net Decoder (upsampling with dropout for epistemic uncertainty)
-        self.up1 = Up(1024, 512 // factor, bilinear, use_dropout=True)
-        self.up2 = Up(512, 256 // factor, bilinear, use_dropout=True)
-        self.up3 = Up(256, 128 // factor, bilinear, use_dropout=True)
-        self.up4 = Up(128, 64, bilinear, use_dropout=True)
-
-        # Final output layer for logits
-        self.outc = OutConv(64, n_classes)
-
-        # Output layer for aleatoric uncertainty (log variance)
-        self.log_variance = OutConv(64, n_classes)
-
-        # FiLM Layer for modulating feature maps with ancillary data
-        self.film = FiLM(input_dim=ancillary_data_dim, feature_map_channels=512)
-
-    def forward(self, x, ancillary_data):
-        # U-Net encoder path
-        x1 = self.inc(x)
-        x2 = self.down1(x1)
-        x3 = self.down2(x2)
-        x4 = self.down3(x3)
-
-        # FiLM modulation at bottleneck
-        ancillary_data = ancillary_data.float()
-        x4 = self.film(x4, ancillary_data)  # Modulate with crop calendar
-
-        x5 = self.down4(x4)
-
-        # U-Net decoder path with skip connections
-        x = self.up1(x5, x4)
-        x = self.up2(x, x3)
-        x = self.up3(x, x2)
-        x = self.up4(x, x1)
-
-        # Output predictions (logits) and aleatoric uncertainty (log variance)
-        logits = self.outc(x)
-        log_var = self.log_variance(x)
-
-        return logits, log_var
-
-
-    
-

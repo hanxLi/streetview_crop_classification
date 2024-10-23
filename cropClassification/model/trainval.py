@@ -1,29 +1,30 @@
 from torch.autograd import Variable
+from loss import AleatoricLoss, BalancedCrossEntropyUncertaintyLoss
 import torch
 
-def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=None, device='cpu', use_ancillary=False):
+def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=None, 
+          device='cpu', use_ancillary=False):
     """
     Train the model for one epoch.
-    
+
     Args:
         trainData (DataLoader): DataLoader for training batches.
         model (torch.nn.Module): The model to train.
-        criterion (torch.nn.Module): The loss function.
-        optimizer (torch.optim.Optimizer): The optimizer for model parameters.
-        scheduler (torch.optim.lr_scheduler, optional): Learning rate scheduler (handled externally).
+        criterion (nn.Module or function): The loss function.
+        optimizer (torch.optim.Optimizer): Optimizer for model parameters.
+        scheduler (torch.optim.lr_scheduler, optional): Learning rate scheduler.
         trainLoss (list, optional): List to record average loss per epoch.
         device (str): Device to use ('cpu', 'cuda', 'mps').
         use_ancillary (bool): Whether to use ancillary data.
-    
+
     Returns:
         float: Average loss for the epoch.
     """
-
     model.train()  # Set model to training mode
     epoch_loss = 0
     i = 0
 
-    for batch_idx, batch in enumerate(trainData):
+    for _, batch in enumerate(trainData):
         if use_ancillary:
             img, ancillary_data, label = batch
             ancillary_data = ancillary_data.to(device)
@@ -36,11 +37,18 @@ def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=None
 
         # Forward pass
         if use_ancillary:
-            out = model(img, ancillary_data)  # Pass both image and ancillary data
+            output = model(img, ancillary_data)  # Pass both image and ancillary data
         else:
-            out = model(img)  # Pass only image
+            output = model(img)  # Pass only image
 
-        loss = criterion(out, label)  # Compute loss
+        # Check if the model outputs uncertainty (tuple with logits and log_var)
+        if isinstance(output, tuple):
+            logits, log_var = output
+            loss = criterion(logits, label, log_var)  # Use aleatoric loss
+        else:
+            logits = output  # For models without uncertainty
+            loss = criterion(logits, label)  # Use standard loss
+
         epoch_loss += loss.item()
 
         # Backward pass and optimization step
@@ -64,30 +72,27 @@ def train(trainData, model, criterion, optimizer, scheduler=None, trainLoss=None
     return avg_epoch_loss
 
 
-
-
 def validate(valData, model, criterion, valLoss=None, device='cpu', use_ancillary=False):
     """
     Validate the model for one epoch.
-    
+
     Args:
         valData (DataLoader): DataLoader for validation batches.
         model (torch.nn.Module): Trained model for validation.
-        criterion (torch.nn.Module): Function to calculate loss.
+        criterion (nn.Module or function): Function to calculate loss.
         valLoss (list, optional): List to record average loss for each epoch.
         device (str): Device to use ('cpu', 'cuda', 'mps').
         use_ancillary (bool): Whether to use ancillary data.
-    
+
     Returns:
         float: The average validation loss over the epoch.
     """
-
     model.eval()  # Set model to evaluation mode
     epoch_loss = 0
     i = 0
 
     with torch.no_grad():  # Disable gradients during validation
-        for batch_idx, batch in enumerate(valData):
+        for _, batch in enumerate(valData):
             if use_ancillary:
                 img, ancillary_data, label = batch
                 ancillary_data = ancillary_data.to(device)
@@ -100,12 +105,18 @@ def validate(valData, model, criterion, valLoss=None, device='cpu', use_ancillar
 
             # Forward pass
             if use_ancillary:
-                out = model(img, ancillary_data)  # Pass both image and ancillary data
+                output = model(img, ancillary_data)  # Pass both image and ancillary data
             else:
-                out = model(img)  # Pass only image
+                output = model(img)  # Pass only image
 
-            # Compute loss
-            loss = criterion(out, label)
+            # Check if the model outputs uncertainty (tuple with logits and log_var)
+            if isinstance(output, tuple):
+                logits, log_var = output
+                loss = criterion(logits, label, log_var)  # Use aleatoric loss
+            else:
+                logits = output  # For models without uncertainty
+                loss = criterion(logits, label)  # Use standard loss
+
             epoch_loss += loss.item()
             i += 1
 

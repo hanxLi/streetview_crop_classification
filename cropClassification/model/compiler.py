@@ -1,28 +1,22 @@
 import os
 import torch
+import time
 import torch.optim as optim
-import tensorboard
-from torch.utils.tensorboard import SummaryWriter
+import cv2
+from PIL import Image
 from datetime import datetime
 from pathlib import Path
-import time
-
+from torch.utils.tensorboard import SummaryWriter
 from eval import do_accuracy_evaluation
 from trainval import train, validate
-from predict import *
-
+from predict_uncertain import predict_full_image, load_ancillary_data
 
 class ModelCompiler:
     """
-    Simplified ModelCompiler for managing segmentation model training, evaluation, and predictions.
-    
-    Args:
-        model (torch.nn.Module): PyTorch model for segmentation.
-        params_init (str, optional): Path to initial model parameters (checkpoint).
-        freeze_params (list, optional): List of indices for parameters to keep frozen.
+    ModelCompiler for managing segmentation with optional uncertainty-aware U-Net.
     """
-    
-    def __init__(self, model, params_init=None, freeze_params=None, resume_training=False, optimizer=None, scheduler=None):
+    def __init__(self, model, params_init=None, freeze_params=None, 
+                 resume_training=False, optimizer=None, scheduler=None):
         self.working_dir = os.getcwd()
         self.out_dir = "outputs"
         self.model = model
@@ -30,7 +24,7 @@ class ModelCompiler:
         self.gpu = torch.cuda.is_available()
         self.mps = torch.backends.mps.is_available()
 
-        # Determine the device to use: CUDA, MPS, or CPU
+        # Device configuration
         if self.gpu:
             print('---------- GPU (CUDA) available ----------')
             self.device = torch.device('cuda')
@@ -44,44 +38,24 @@ class ModelCompiler:
 
         self.model = self.model.to(self.device)
 
-        # Load initial model parameters if provided
         if params_init:
             self.load_params(params_init, freeze_params, resume_training, optimizer, scheduler)
 
-        # Display the total number of trainable parameters
         num_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         print(f"Total number of trainable parameters: {num_params / 1e6:.1f}M")
 
-    def load_params(self, dir_params, freeze_params=None, resume_training=False, optimizer=None, scheduler=None):
-        """
-        Load model parameters from a checkpoint file and optionally load optimizer/scheduler states.
-
-        Args:
-            dir_params (str): Path to the checkpoint file containing the model parameters.
-            freeze_params (list, optional): List of parameter indices to freeze.
-            resume_training (bool, optional): Whether to load optimizer and scheduler states.
-            optimizer (torch.optim.Optimizer, optional): Optimizer instance to load state into.
-            scheduler (torch.optim.lr_scheduler._LRScheduler, optional): Scheduler instance to load state into.
-        """
+    def load_params(self, dir_params, freeze_params=None, resume_training=False, 
+                    optimizer=None, scheduler=None):
         print(f"Loading model parameters from: {dir_params}")
-
-        # Load checkpoint safely, mapping to CPU to avoid device conflicts
         checkpoint = torch.load(dir_params, map_location=torch.device('cpu'))
 
-        # Load the state_dict for the model
         model_state_dict = checkpoint.get('state_dict', checkpoint)
-
-        # Handle DataParallel models by removing 'module.' prefix from keys
         if any(key.startswith("module.") for key in model_state_dict.keys()):
             model_state_dict = {k[7:]: v for k, v in model_state_dict.items()}
 
-        # Load the state_dict into the model
         self.model.load_state_dict(model_state_dict, strict=False)
-
-        # Move the model to the correct device
         self.model = self.model.to(self.device)
 
-        # Optionally freeze specific parameters
         if freeze_params:
             for i, param in enumerate(self.model.parameters()):
                 if i in freeze_params:
@@ -89,149 +63,83 @@ class ModelCompiler:
 
         print("Model parameters loaded successfully.")
 
-        # Load optimizer and scheduler states if resuming training
         if resume_training and optimizer:
             if 'optimizer' in checkpoint:
                 print("Loading optimizer state...")
                 optimizer.load_state_dict(checkpoint['optimizer'])
-            else:
-                print("Warning: Optimizer state not found in the checkpoint.")
-
             if scheduler and 'scheduler' in checkpoint:
                 print("Loading scheduler state...")
                 scheduler.load_state_dict(checkpoint['scheduler'])
 
-    def resume_checkpoint(self, optimizer, scheduler, resume_epoch):
+    def fit(self, trainDataset, valDataset, epochs, optimizer_name, lr_init, 
+            lr_policy, criterion, momentum=None, resume=False, resume_epoch=None, 
+            log=True, use_ancillary=False, **kwargs):
         """
-        Resume training from a checkpoint.
-
-        Args:
-            optimizer (torch.optim.Optimizer): Optimizer instance.
-            scheduler (torch.optim.lr_scheduler._LRScheduler): Scheduler instance.
-            resume_epoch (int): Epoch to resume from.
-
-        Returns:
-            int: The epoch to resume training from.
-        """
-        checkpoint_path = self.checkpoint_dir / f"{resume_epoch}_checkpoint.pth.tar"
-        
-        if checkpoint_path.exists():
-            print(f"Resuming from checkpoint: {checkpoint_path}")
-            
-            # Load the checkpoint
-            checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
-            
-            # Load model, optimizer, and scheduler states
-            self.model.load_state_dict(checkpoint["state_dict"])
-            if optimizer:
-                optimizer.load_state_dict(checkpoint["optimizer"])
-            if scheduler:
-                scheduler.load_state_dict(checkpoint["scheduler"])
-            
-            # Return the epoch to resume from
-            return checkpoint["epoch"]
-        else:
-            raise FileNotFoundError(f"No checkpoint found at {checkpoint_path}")
-    
-    def fit(self, trainDataset, valDataset, epochs, optimizer_name, lr_init, lr_policy, 
-            criterion, momentum=None, resume=False, resume_epoch=None, log=True, return_loss=False, 
-            use_ancillary=False, **kwargs):
-        """
-        Train the model with the given datasets, criterion, optimizer, and learning rate scheduler.
-        
-        Args:
-            trainDataset (Dataset): Training dataset.
-            valDataset (Dataset): Validation dataset.
-            epochs (int): Number of training epochs.
-            optimizer_name (str): Name of the optimizer to use ('SGD' or 'Adam').
-            lr_init (float): Initial learning rate.
-            lr_policy (str): Learning rate scheduler policy ('steplr' or 'multisteplr').
-            criterion (torch.nn.Module): Loss function.
-            momentum (float, optional): Momentum (for SGD optimizer).
-            resume (bool, optional): Whether to resume training from a checkpoint.
-            resume_epoch (int, optional): Epoch to resume from.
-            log (bool, optional): Enable TensorBoard logging.
-            use_ancillary (bool, optional): Whether to use ancillary data or not.
-            **kwargs: Additional arguments for learning rate scheduler.
+        Train the model using the provided datasets, criterion, and optimizer.
         """
         self.model_dir = f"{self.working_dir}/{self.out_dir}/{self.model_name}_ep{epochs}"
         self.checkpoint_dir = Path(self.model_dir) / "chkpt"
         os.makedirs(self.checkpoint_dir, exist_ok=True)
-        train_loss = []
-        val_loss = []
+        train_loss, val_loss = [], []
+
         print("-------------------------- Start training --------------------------")
         start = datetime.now()
 
-        # Setup TensorBoard logging if enabled
-        if log:
-            writer = SummaryWriter(log_dir=self.model_dir)
-        else:
-            writer = None
+        writer = SummaryWriter(log_dir=self.model_dir) if log else None
 
-        # Setup optimizer
         optimizer = self.get_optimizer(optimizer_name, lr_init, momentum)
-
-        # Setup learning rate scheduler (StepLR or MultiStepLR)
         scheduler = self.get_scheduler(optimizer, lr_policy, **kwargs)
 
-        # Optionally resume from checkpoint
         if resume:
             resume_epoch = self.resume_checkpoint(optimizer, scheduler, resume_epoch)
 
-        # Main training loop
         for epoch in range(resume_epoch or 0, epochs):
             print(f"----------------------- [{epoch+1}/{epochs}] -----------------------")
             epoch_start = time.time()
 
-            # Train for one epoch
-            train_loss_epoch = train(trainDataset, self.model, criterion, optimizer, scheduler, 
-                                     trainLoss=train_loss, device=self.device, use_ancillary=use_ancillary)
+            # Training step
+            train_loss_epoch = train(
+                trainDataset, self.model, criterion, optimizer, scheduler,
+                trainLoss=train_loss, device=self.device, use_ancillary=use_ancillary
+            )
             train_loss.append(train_loss_epoch)
-            
-            # Validate after each epoch
-            val_loss_epoch = validate(valDataset, self.model, criterion, valLoss=val_loss, 
-                                      device=self.device, use_ancillary=use_ancillary)
+
+            # Validation step
+            val_loss_epoch = validate(
+                valDataset, self.model, criterion, valLoss=val_loss,
+                device=self.device, use_ancillary=use_ancillary
+            )
             val_loss.append(val_loss_epoch)
 
-            # Step the scheduler
             if scheduler:
                 scheduler.step()
 
-            # Log training and validation losses to TensorBoard
-            if log:
+            # Log to TensorBoard
+            if writer:
                 writer.add_scalar('Loss/Train', train_loss_epoch, epoch)
                 writer.add_scalar('Loss/Validation', val_loss_epoch, epoch)
-
-            # Log learning rate if logging is enabled
-            if log and scheduler:
                 writer.add_scalar('Learning Rate', scheduler.get_last_lr()[0], epoch)
 
-            # Save checkpoint every 5 epochs
             if (epoch + 1) % 5 == 0:
                 self.save_checkpoint(optimizer, scheduler, epoch + 1)
 
-            epoch_duration = time.time() - epoch_start
-            print(f"Epoch {epoch+1} completed in {epoch_duration:.2f} seconds")
-        
+            print(f"Epoch {epoch+1} completed in {time.time() - epoch_start:.2f} seconds")
+
         if writer:
             writer.close()
-        
-        print(f"-------------------------- Training finished in {(datetime.now() - start).seconds}s --------------------------")
-        if return_loss:
-            return train_loss, val_loss
+
+        print(f"Training finished in {(datetime.now() - start).seconds}s")
+
+    def save_checkpoint(self, optimizer, scheduler, epoch):
+        checkpoint = {
+            "epoch": epoch,
+            "state_dict": self.model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+        }
+        torch.save(checkpoint, self.checkpoint_dir / f"{epoch}_checkpoint.pth.tar")
 
     def get_optimizer(self, optimizer_name, lr_init, momentum=None):
-        """
-        Retrieve the optimizer based on the optimizer_name.
-        
-        Args:
-            optimizer_name (str): Name of the optimizer ('SGD' or 'Adam').
-            lr_init (float): Initial learning rate.
-            momentum (float, optional): Momentum value (if using SGD).
-        
-        Returns:
-            torch.optim.Optimizer: The optimizer for training.
-        """
         if optimizer_name.lower() == "sgd":
             return optim.SGD(self.model.parameters(), lr=lr_init, momentum=momentum, weight_decay=1e-4)
         elif optimizer_name.lower() == "adam":
@@ -240,122 +148,58 @@ class ModelCompiler:
             raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 
     def get_scheduler(self, optimizer, lr_policy, **kwargs):
-        """
-        Retrieve the learning rate scheduler based on the lr_policy (StepLR or MultiStepLR).
-        
-        Args:
-            optimizer (torch.optim.Optimizer): The optimizer for which to schedule learning rate.
-            lr_policy (str): Learning rate scheduler policy ('steplr' or 'multisteplr').
-            **kwargs: Additional arguments for the scheduler.
-        
-        Returns:
-            torch.optim.lr_scheduler._LRScheduler: The learning rate scheduler.
-        """
-        lr_policy = lr_policy.lower()
-        if lr_policy == "steplr":
-            return torch.optim.lr_scheduler.StepLR(optimizer, step_size=kwargs.get('step_size', 10), gamma=kwargs.get('gamma', 0.1))
-        elif lr_policy == "multisteplr":
-            return torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=kwargs.get('milestones', [10, 20]), gamma=kwargs.get('gamma', 0.1))
+        if lr_policy.lower() == "steplr":
+            return optim.lr_scheduler.StepLR(optimizer, step_size=kwargs.get('step_size', 10), gamma=kwargs.get('gamma', 0.1))
+        elif lr_policy.lower() == "multisteplr":
+            return optim.lr_scheduler.MultiStepLR(optimizer, milestones=kwargs.get('milestones', [10, 20]), gamma=kwargs.get('gamma', 0.1))
         else:
             raise ValueError(f"Unsupported learning rate policy: {lr_policy}")
-        
-    def accuracy_evaluation(self, eval_dataset, filename, num_classes, class_mapping):
-        """
-        Evaluate the accuracy of the model on the provided evaluation dataset.
 
-        Args:
-            eval_dataset (DataLoader): The evaluation dataset to evaluate the model on.
-            filename (str): The filename to save the evaluation results in the output CSV.
+    def evaluate(self, dataloader, num_classes, class_mapping, out_name=None, log_uncertainty=False):
+        """
+        Evaluate the model using the provided dataloader and compute metrics.
+        """
+        print("-------------------------- Start Evaluation --------------------------")
+        metrics = do_accuracy_evaluation(
+            self.model, dataloader, num_classes, class_mapping, 
+            out_name=out_name, log_uncertainty=log_uncertainty
+        )
+        print("-------------------------- Evaluation Complete --------------------------")
+        for key, value in metrics.items():
+            print(f"{key}: {value:.4f}")
+        return metrics
+
+def predict_image(self, image_path, csv_path, step=16, window_size=(224, 224)):
     """
+    Predict on a full image and optionally generate an uncertainty map.
+    """
+    print(f"Predicting on image: {image_path}")
 
-        if not os.path.exists(Path(self.working_dir) / self.out_dir):
-            os.makedirs(Path(self.working_dir) / self.out_dir)
+    # Load ancillary data associated with the image
+    image_name = os.path.basename(image_path)
+    ancillary_data = load_ancillary_data(csv_path, image_name)
 
-        os.chdir(Path(self.working_dir) / self.out_dir)
+    # Preprocess the input image
+    input_image = self.preprocess_image(image_path)
 
-        print("---------------- Start evaluation ----------------")
+    # Sliding window inference
+    predictions, uncertainties = [], []
+    for (x, y, patch) in self.sliding_window(input_image, step, window_size):
+        pred, uncertainty = self.predict_patch(patch, ancillary_data)
+        predictions.append((x, y, pred, uncertainty))
+        uncertainties.append(uncertainty)
 
-        start = datetime.now()
+    # Stitch together predictions and uncertainties
+    pred_mask, uncertainty_map = self.stitch_predictions(input_image.shape, window_size, step, predictions, uncertainties)
 
-        do_accuracy_evaluation(self.model, eval_dataset, num_classes, class_mapping, filename)
+    # Draw bounding boxes on the original image
+    original_image = cv2.imread(image_path)
+    original_image_rgb = cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB)
+    result_image = self.draw_bounding_boxes(original_image_rgb, pred_mask, uncertainty_map)
 
-        duration_in_sec = (datetime.now() - start).seconds
-        print(
-            f"---------------- Evaluation finished in {duration_in_sec}s ----------------")
+    # Display the final result
+    Image.fromarray(result_image).show()
 
-    def resume_checkpoint(self, optimizer, scheduler, resume_epoch):
-        """
-        Resume training from a checkpoint.
-        
-        Args:
-            optimizer (torch.optim.Optimizer): The optimizer to load state.
-            scheduler (torch.optim.lr_scheduler._LRScheduler): The learning rate scheduler to load state.
-            resume_epoch (int, optional): The epoch to resume from.
-        
-        Returns:
-            int: The epoch to resume training from.
-        """
-        checkpoint_path = self.checkpoint_dir / f"{resume_epoch}_checkpoint.pth.tar"
-        if checkpoint_path.exists():
-            print(f"Resuming from checkpoint: {checkpoint_path}")
-            checkpoint = torch.load(checkpoint_path)
-            self.model.load_state_dict(checkpoint["state_dict"])
-            optimizer.load_state_dict(checkpoint["optimizer"])
-            scheduler.load_state_dict(checkpoint["scheduler"])
-            return checkpoint["epoch"]
-        else:
-            raise FileNotFoundError(f"No checkpoint found at {checkpoint_path}")
-        
-    def predict_regular_image(self, image_path, label_path=None, chip_size=224, overlap=32, class_num=3, output_path=None, plot=False):
-        """
-        Predict segmentation masks on regular images using a trained model.
+    print("Prediction completed.")
+    return pred_mask, uncertainty_map
 
-        Args:
-            image_path (str): Path to the input image.
-            label_path (str, optional): Path to the ground truth label (optional, for plotting).
-            chip_size (int): Size of the image chips for tiling.
-            overlap (int): Overlap between neighboring chips.
-            class_num (int): Number of classes for segmentation.
-            output_path (str, optional): Path to save the predicted mask.
-            plot (bool): Whether to plot the original image, label, and prediction.
-        
-        Returns:
-            np.ndarray: The predicted segmentation mask.
-        """
-        # Device handling
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-        if device.type == 'cpu':
-            print("Using CPU. It is recommended to use CUDA or MPS for better performance.")
-        elif device.type == 'mps':
-            print("Using MPS. Note: MPS may have performance issues.")
-
-        # Perform prediction
-        pred_mask = predict_image(image_path, self.model, chip_size=chip_size, overlap=overlap, class_num=class_num, device=device)
-
-        # Save prediction if output_path is provided
-        if output_path:
-            save_prediction(pred_mask, output_path)
-            print(f"Prediction saved at {output_path}")
-
-        # Plot results if requested
-        if plot and label_path:
-            plot_prediction(image_path, label_path, pred_mask)
-
-        return pred_mask
-
-    def save_checkpoint(self, optimizer, scheduler, epoch):
-        """
-        Save a checkpoint of the current model, optimizer, and scheduler.
-        
-        Args:
-            optimizer (torch.optim.Optimizer): The optimizer to save state.
-            scheduler (torch.optim.lr_scheduler._LRScheduler): The scheduler to save state.
-            epoch (int): The current epoch number.
-        """
-        checkpoint = {
-            "epoch": epoch,
-            "state_dict": self.model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
-        }
-        torch.save(checkpoint, self.checkpoint_dir / f"{epoch}_checkpoint.pth.tar")
