@@ -1,0 +1,61 @@
+# Use NVIDIA CUDA base image with CUDA 12.1 support
+FROM nvidia/cuda:12.1.0-devel-ubuntu20.04
+
+# Install essential system-level dependencies and build tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    wget \
+    ca-certificates \
+    build-essential \
+    gcc \
+    g++ \
+    libgl1-mesa-glx \
+    gdal-bin \
+    libgdal-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set the path for GDAL
+ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
+ENV C_INCLUDE_PATH=/usr/include/gdal
+
+# Install Miniforge to manage Conda environments
+RUN curl -sLo /tmp/miniforge.sh https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh \
+    && bash /tmp/miniforge.sh -b -p /opt/conda \
+    && rm /tmp/miniforge.sh
+
+# Update PATH to use Conda by default
+ENV PATH="/opt/conda/bin:${PATH}"
+
+# Create a Conda environment and install geospatial libraries
+RUN /opt/conda/bin/conda create -n myenv -c conda-forge -y \
+    gdal fiona geopandas \
+    && /opt/conda/bin/conda clean -afy
+
+# Install CUDA-enabled PyTorch via PyPI
+RUN /opt/conda/bin/conda run -n myenv pip install --no-cache-dir \
+    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Install the remaining Python packages using pip
+RUN /opt/conda/bin/conda run -n myenv pip install --no-cache-dir \
+    numpy \
+    scipy \
+    pandas \
+    tqdm \
+    matplotlib \
+    seaborn \
+    jupyterlab \
+    scikit-learn \
+    opencv-python-headless \
+    tensorboard \
+    google-streetview \
+    exifread \
+    scikit-image
+
+# Expose the port for JupyterLab
+EXPOSE 8888
+
+# Set the working directory
+WORKDIR /home/user
+
+# Entry point with detailed backend diagnostics
+ENTRYPOINT ["bash", "-c", "/opt/conda/bin/conda run -n myenv python -c \"import torch; print('Checking GPU backends...'); print('CUDA available:', torch.cuda.is_available()); print('Using:', 'CUDA' if torch.cuda.is_available() else 'CPU')\""]
