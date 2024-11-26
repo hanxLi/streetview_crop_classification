@@ -5,6 +5,7 @@ import numpy as np
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import seaborn as sns
+from pathlib import Path
 
 class Evaluator:
     def __init__(self, num_class):
@@ -132,7 +133,7 @@ def do_accuracy_evaluation(model, valData, num_classes, class_mapping,
             # Add results to evaluator
             evaluator.add_batch(labels.cpu().numpy(), preds.cpu().numpy())
 
-    # Compute metrics
+    # Compute aggregated metrics
     metrics = {
         "Overall Accuracy": evaluator.overall_accuracy(),
         "Mean Accuracy": np.nanmean(evaluator.classwise_overal_accuracy()),
@@ -142,21 +143,42 @@ def do_accuracy_evaluation(model, valData, num_classes, class_mapping,
         "Mean F1 Score": np.nanmean(evaluator.f1_score())
     }
 
+    # Compute class-wise metrics
+    classwise_metrics = {}
+    for i, class_name in class_mapping.items():
+        classwise_metrics[class_name] = {
+            "Accuracy": evaluator.classwise_overal_accuracy()[i],
+            "Precision": evaluator.precision()[i],
+            "Recall": evaluator.recall()[i],
+            "IoU": evaluator.intersection_over_union()[i],
+            "F1 Score": evaluator.f1_score()[i]
+        }
+
     # Log uncertainty if available
     if log_uncertainty and uncertainties:
         avg_uncertainty = np.mean(uncertainties)
         metrics["Mean Uncertainty"] = avg_uncertainty
         print(f"Mean Uncertainty: {avg_uncertainty:.4f}")
 
-    # Plot confusion matrix
-    evaluator.plot_confusion_matrix(class_mapping)
-
-    # Save metrics to CSV if output path is provided
+    # If out_name is provided, extract the directory path to save confusion matrix
     if out_name:
+        save_dir = Path(out_name).parent  # Extract directory from out_name
+        confusion_matrix_path = save_dir / "confusion_matrix.png"
+
+        print(f"Saving confusion matrix to: {confusion_matrix_path}")
+
+        # Plot and save the confusion matrix in the same folder as the CSV
+        evaluator.plot_confusion_matrix(class_mapping, save_path=confusion_matrix_path)
+
+        # Save metrics to CSV
         with open(out_name, "w", newline='') as file:
             writer = csv.writer(file)
             writer.writerow(["Metric", "Value"])
             for key, value in metrics.items():
                 writer.writerow([key, value])
+            writer.writerow([])  # Add a blank line before class-wise metrics
+            writer.writerow(["Class", "Accuracy", "Precision", "Recall", "IoU", "F1 Score"])
+            for class_name, class_metrics in classwise_metrics.items():
+                writer.writerow([class_name] + list(class_metrics.values()))
 
-    return metrics
+    return metrics, classwise_metrics

@@ -5,14 +5,16 @@ import torch.nn.functional as F
 class BalancedCrossEntropyLoss(nn.Module):
     '''
     Balanced cross entropy loss with inverse square root of class frequency weighting.
-
+    
     Params:
+        class_weights (torch.Tensor or None): Predefined class weights for each class.
         ignore_index (int): Class index to ignore.
         reduction (str): Reduction method to apply ('mean', 'sum', or 'none').
     '''
 
-    def __init__(self, ignore_index=-100, reduction='mean'):
+    def __init__(self, class_weights=None, ignore_index=-100, reduction='mean'):
         super(BalancedCrossEntropyLoss, self).__init__()
+        self.class_weights = class_weights  # Predefined class-wise weights (if any)
         self.ignore_index = ignore_index
         self.reduction = reduction
 
@@ -25,21 +27,34 @@ class BalancedCrossEntropyLoss(nn.Module):
         unique = unique[valid_mask]
         unique_counts = unique_counts[valid_mask]
 
-        # Calculate class weights using inverse square root of frequency
+        # Calculate dynamic class weights using inverse square root of frequency
         ratio = unique_counts.float() / torch.numel(target)  # Frequency ratio
-        weight = 1.0 / torch.sqrt(ratio)  # Inverse square root of frequency
+        dynamic_weights = 1.0 / torch.sqrt(ratio)  # Inverse sqrt of frequency
 
-        # Normalize the weights to sum to 1 (optional, but common practice)
-        weight = weight / torch.sum(weight)
+        # Normalize the dynamic weights to sum to 1
+        dynamic_weights /= dynamic_weights.sum()
 
-        # Initialize weights for the classes in the prediction
-        lossWeight = torch.ones(predict.shape[1], device=predict.device)
-        for i in range(len(unique)):
-            lossWeight[unique[i]] = weight[i]
+        # Initialize the final weights for all classes (default to 1.0 for each class)
+        num_classes = predict.shape[1]  # Number of output classes
+        loss_weights = torch.ones(num_classes, device=predict.device)
 
-        # Use the dynamically calculated weights in CrossEntropyLoss
-        loss_fn = nn.CrossEntropyLoss(weight=lossWeight, ignore_index=self.ignore_index, reduction=self.reduction)
+        # Combine user-provided class weights (if any) with dynamic weights
+        for i, cls in enumerate(unique):
+            if self.class_weights is not None:
+                # Multiply user-defined class weights with dynamic weights
+                loss_weights[cls] = self.class_weights[cls] * dynamic_weights[i]
+            else:
+                # Use only dynamic weights if no user-provided weights are available
+                loss_weights[cls] = dynamic_weights[i]
+
+        # Define the CrossEntropyLoss with the calculated weights
+        loss_fn = nn.CrossEntropyLoss(weight=loss_weights, 
+                                      ignore_index=self.ignore_index, 
+                                      reduction=self.reduction)
+        
+        # Calculate the loss
         return loss_fn(predict, target)
+
 
 class AleatoricLoss(nn.Module):
     def __init__(self, reduction='mean', ignore_index=None, clamp_min=-10, clamp_max=10):
@@ -151,3 +166,62 @@ class BalancedCrossEntropyUncertaintyLoss(nn.Module):
             return uncertainty_loss
 
 
+class FocalLoss(nn.Module):
+    """
+    Focal Loss with optional alpha weighting per class and support for ignoring an index.
+    Args:
+        gamma (float): Focusing parameter. Default: 2.0
+        alpha (torch.Tensor, optional): Class weights tensor. Shape: [num_classes]
+        reduction (str): 'mean', 'sum', or 'none'. Default: 'mean'
+        ignore_index (int, optional): Class index to ignore during loss computation.
+    """
+    def __init__(self, gamma=2.0, alpha=None, reduction='mean', ignore_index=None):
+        super(FocalLoss, self).__init__()
+        self.gamma = gamma
+        self.reduction = reduction
+        self.ignore_index = ignore_index
+
+        if alpha is not None:
+            # Ensure alpha is a tensor
+            self.alpha = torch.tensor(alpha, dtype=torch.float32)
+        else:
+            self.alpha = None
+
+    def forward(self, logits, targets):
+        # Ensure targets are integers
+        targets = targets.long()
+
+        # Move alpha to the same device as logits
+        if self.alpha is not None:
+            self.alpha = self.alpha.to(logits.device)
+
+        # Compute log-softmax over the logits
+        log_probs = F.log_softmax(logits, dim=1)
+
+        # Gather the log probabilities corresponding to the targets
+        targets = targets.squeeze(1)  # Adjust the shape to [B, H, W]
+        log_probs = torch.gather(log_probs, dim=1, index=targets.unsqueeze(1)).squeeze(1)
+
+        # Apply the ignore_index mask, if provided
+        if self.ignore_index is not None:
+            valid_mask = targets != self.ignore_index  # Shape: [B, H, W]
+            log_probs = log_probs[valid_mask]
+            targets = targets[valid_mask]
+
+        # Compute the focal weight
+        probs = log_probs.exp()
+        focal_weight = (1 - probs) ** self.gamma
+        loss = -focal_weight * log_probs
+
+        # Apply class weights if provided
+        if self.alpha is not None:
+            alpha_t = self.alpha[targets]  # Shape: [valid_elements]
+            loss = alpha_t * loss
+
+        # Apply reduction
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
