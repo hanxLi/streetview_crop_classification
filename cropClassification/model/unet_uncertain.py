@@ -29,14 +29,14 @@ class SelfAttention(nn.Module):
     """
     Self-Attention Layer with dropout for regularization.
     """
-    def __init__(self, in_channels, dropout=0.1):
+    def __init__(self, in_channels, dropout_rate):
         super(SelfAttention, self).__init__()
         self.query = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
         self.key = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
         self.value = nn.Conv2d(in_channels, in_channels, kernel_size=1)
 
         self.gamma = nn.Parameter(torch.zeros(1))  # Learnable scaling factor
-        self.dropout = nn.Dropout(dropout)  # Dropout applied to attention output
+        self.dropout = nn.Dropout(dropout_rate)  # Dropout applied to attention output
 
     def forward(self, x):
         B, C, H, W = x.size()
@@ -68,7 +68,7 @@ class DoubleConv(nn.Module):
     """
     Double convolution block: (conv => BN => ReLU) * 2 with optional dropout.
     """
-    def __init__(self, in_channels, out_channels, use_dropout=False):
+    def __init__(self, in_channels, out_channels, dropout_rate=None):
         super().__init__()
         layers = [
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
@@ -78,8 +78,8 @@ class DoubleConv(nn.Module):
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
         ]
-        if use_dropout:
-            layers.append(nn.Dropout2d(p=0.1))  # Optional dropout for stochasticity
+        if dropout_rate:
+            layers.append(nn.Dropout2d(p=dropout_rate))  # Optional dropout for stochasticity
 
         self.double_conv = nn.Sequential(*layers)
 
@@ -91,11 +91,11 @@ class Down(nn.Module):
     """
     Downscaling block with maxpool followed by double convolution.
     """
-    def __init__(self, in_channels, out_channels, use_dropout=False):
+    def __init__(self, in_channels, out_channels, dropout_rate=None):
         super().__init__()
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(2),
-            DoubleConv(in_channels, out_channels, use_dropout=use_dropout)
+            DoubleConv(in_channels, out_channels, dropout_rate=dropout_rate)
         )
 
     def forward(self, x):
@@ -106,14 +106,14 @@ class Up(nn.Module):
     """
     Upscaling block with optional dropout to introduce uncertainty.
     """
-    def __init__(self, in_channels, out_channels, bilinear=True, use_dropout=False):
+    def __init__(self, in_channels, out_channels, bilinear=True, dropout_rate=None):
         super().__init__()
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         else:
             self.up = nn.ConvTranspose2d(in_channels // 2, in_channels // 2, kernel_size=2, stride=2)
 
-        self.conv = DoubleConv(in_channels, out_channels, use_dropout=use_dropout)
+        self.conv = DoubleConv(in_channels, out_channels, dropout_rate=dropout_rate)
 
     def forward(self, x1, x2):
         x1 = self.up(x1)
@@ -144,7 +144,7 @@ class UNetWithUncertainty(nn.Module):
     """
     U-Net model with FiLM layers for ancillary data and uncertainty estimation.
     """
-    def __init__(self, n_channels, n_classes, ancillary_data_dim, bilinear=True, use_dropout=True):
+    def __init__(self, n_channels, n_classes, ancillary_data_dim, bilinear=True, dropout_rate=None):
         super(UNetWithUncertainty, self).__init__()
         factor = 2 if bilinear else 1
 
@@ -156,10 +156,10 @@ class UNetWithUncertainty(nn.Module):
         self.down4 = Down(512, 1024 // factor)
 
         # Decoder with dropout for epistemic uncertainty
-        self.up1 = Up(1024, 512 // factor, bilinear, use_dropout=use_dropout)
-        self.up2 = Up(512, 256 // factor, bilinear, use_dropout=use_dropout)
-        self.up3 = Up(256, 128 // factor, bilinear, use_dropout=use_dropout)
-        self.up4 = Up(128, 64, bilinear, use_dropout=use_dropout)
+        self.up1 = Up(1024, 512 // factor, bilinear, dropout_rate=dropout_rate)
+        self.up2 = Up(512, 256 // factor, bilinear, dropout_rate=dropout_rate)
+        self.up3 = Up(256, 128 // factor, bilinear, dropout_rate=dropout_rate)
+        self.up4 = Up(128, 64, bilinear, dropout_rate=dropout_rate)
 
         # FiLM layer for modulating features with ancillary data
         self.film = FiLM(input_dim=ancillary_data_dim, feature_map_channels=512)
@@ -197,7 +197,7 @@ class UNetWithFiLM(nn.Module):
     """
     U-Net model with FiLM layers for ancillary data (no uncertainty).
     """
-    def __init__(self, n_channels, n_classes, ancillary_data_dim, bilinear=True, use_dropout=False):
+    def __init__(self, n_channels, n_classes, ancillary_data_dim, bilinear=True, dropout_rate=None):
         super(UNetWithFiLM, self).__init__()
         factor = 2 if bilinear else 1
 
@@ -209,10 +209,10 @@ class UNetWithFiLM(nn.Module):
         self.down4 = Down(512, 1024 // factor)
 
         # Decoder
-        self.up1 = Up(1024, 512 // factor, bilinear, use_dropout=use_dropout)
-        self.up2 = Up(512, 256 // factor, bilinear, use_dropout=use_dropout)
-        self.up3 = Up(256, 128 // factor, bilinear, use_dropout=use_dropout)
-        self.up4 = Up(128, 64, bilinear, use_dropout=use_dropout)
+        self.up1 = Up(1024, 512 // factor, bilinear, dropout_rate=dropout_rate)
+        self.up2 = Up(512, 256 // factor, bilinear, dropout_rate=dropout_rate)
+        self.up3 = Up(256, 128 // factor, bilinear, dropout_rate=dropout_rate)
+        self.up4 = Up(128, 64, bilinear, use_dropout=dropout_rate)
 
         # FiLM layer for ancillary data modulation
         self.film = FiLM(input_dim=ancillary_data_dim, feature_map_channels=512)
@@ -245,7 +245,7 @@ class UNetWithFiLM(nn.Module):
         return logits
     
 class UNetWithAttention(nn.Module):
-    def __init__(self, n_channels, n_classes, ancillary_data_dim, bilinear=True):
+    def __init__(self, n_channels, n_classes, ancillary_data_dim, dropout_rate, bilinear=True, ):
         super(UNetWithAttention, self).__init__()
         factor = 2 if bilinear else 1
 
@@ -254,7 +254,7 @@ class UNetWithAttention(nn.Module):
         self.down1 = Down(64, 128)
         self.down2 = Down(128, 256)
         self.down3 = Down(256, 512)
-        self.down4 = Down(512, 1024 // factor, use_dropout=True)  # Dropout only in the last encoder block
+        self.down4 = Down(512, 1024 // factor, dropout_rate=dropout_rate)  # Dropout only in the last encoder block
 
         # FiLM Layers for Modulation
         self.film1 = FiLM(ancillary_data_dim, 128)
@@ -262,7 +262,7 @@ class UNetWithAttention(nn.Module):
         self.film3 = FiLM(ancillary_data_dim, 512)
 
         # Self-Attention Layer at the Bottleneck
-        self.attention = SelfAttention(512)
+        self.attention = SelfAttention(512, dropout_rate)
 
         # Decoder
         self.up1 = Up(1024, 512 // factor, bilinear)
@@ -301,7 +301,7 @@ class UNetWithAttention(nn.Module):
         return logits
 
 class UNetWithAttentionDeep(nn.Module):
-    def __init__(self, n_channels, n_classes, ancillary_data_dim, bilinear=True):
+    def __init__(self, n_channels, n_classes, ancillary_data_dim, dropout_rate, bilinear=True):
         super(UNetWithAttentionDeep, self).__init__()
         factor = 2 if bilinear else 1
 
@@ -311,7 +311,7 @@ class UNetWithAttentionDeep(nn.Module):
         self.down2 = Down(128, 256)
         self.down3 = Down(256, 512)
         self.down4 = Down(512, 1024)
-        self.down5 = Down(1024, 2048 // factor, use_dropout=True)  # Additional depth, with dropout
+        self.down5 = Down(1024, 2048 // factor, dropout_rate=dropout_rate)  # Additional depth, with dropout
 
         # FiLM Layers for Modulation
         self.film1 = FiLM(ancillary_data_dim, 256)  # FiLM at 256 channels
@@ -319,9 +319,9 @@ class UNetWithAttentionDeep(nn.Module):
         self.film3 = FiLM(ancillary_data_dim, 1024)  # FiLM at 1024 channels
 
         # Self-Attention Layers at Bottleneck and in Decoder
-        self.attention_bottleneck = SelfAttention(1024)
-        self.attention_decoder1 = SelfAttention(256)  # Adjusted to 256 channels in decoder
-        self.attention_decoder2 = SelfAttention(128)  # Adjusted to 128 channels in decoder
+        self.attention_bottleneck = SelfAttention(1024, dropout_rate)
+        self.attention_decoder1 = SelfAttention(256, dropout_rate)  # Adjusted to 256 channels in decoder
+        self.attention_decoder2 = SelfAttention(128, dropout_rate)  # Adjusted to 128 channels in decoder
 
         # Decoder (Deeper)
         self.up1 = Up(2048, 1024 // factor, bilinear)

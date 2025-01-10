@@ -232,61 +232,6 @@ def overlay_prediction(image_path, pred_mask, alpha=0.6, colors=None):
     return overlay
 
 
-# def simple_predict_full_image(model, image_path, csv_path, num_classes, device, step=32, window_size=(224, 224)):
-#     """
-#     Perform a simple sliding window prediction on the entire image, without uncertainty estimation.
-    
-#     Args:
-#         model (torch.nn.Module): The model for prediction.
-#         image_path (str): Path to the input image.
-#         csv_path (str): Path to the ancillary data CSV.
-#         num_classes (int): Number of classes for segmentation.
-#         device (torch.device): Device to run the prediction on.
-#         step (int): Step size for the sliding window.
-#         window_size (tuple): Size of each sliding window patch.
-    
-#     Returns:
-#         np.array: Predicted mask for the entire image.
-#     """
-#     image_name = Path(image_path).stem
-#     print(f"Predicting image {image_name} without uncertainty")
-#     ancillary_data = load_ancillary_data(csv_path, image_name, num_classes)
-
-#     # Load and prepare the input image
-#     image = cv2.imread(image_path)
-#     input_image = generate_stacked_image(image)
-#     H, W = input_image.shape[:2]
-
-#     # Initialize output mask for the entire image as int64 for accumulation
-#     pred_mask = np.zeros((H, W), dtype=np.int64)
-#     count_map = np.zeros((H, W), dtype=np.uint8)
-
-#     # Sliding window prediction
-#     for y in range(0, H - window_size[0] + 1, step):
-#         for x in range(0, W - window_size[1] + 1, step):
-#             # Extract the window
-#             window = input_image[y:y + window_size[0], x:x + window_size[1]]
-            
-#             # Convert the window to tensor format and move to the device
-#             window_tensor = transforms.ToTensor()(window).unsqueeze(0).to(device)
-#             ancillary_tensor = ancillary_data.unsqueeze(0).to(device)
-
-#             # Perform a single forward pass with no dropout or uncertainty estimation
-#             with torch.no_grad():
-#                 logits = model(window_tensor, ancillary_tensor)
-#                 probs = F.softmax(logits, dim=1)
-#                 _, pred = torch.max(probs, dim=1)
-
-#             # Add the predicted patch to the output mask
-#             pred = pred.squeeze(0).cpu().numpy()  # Shape: (224, 224)
-#             pred_mask[y:y + window_size[0], x:x + window_size[1]] += pred
-#             count_map[y:y + window_size[0], x:x + window_size[1]] += 1
-
-#     # Normalize the mask by dividing by the count map and convert to uint8
-#     pred_mask = np.round(pred_mask / np.maximum(count_map, 1)).astype(np.uint8)
-
-#     return pred_mask
-
 
 def simple_predict_full_image(model, image_path, csv_path, num_classes, device, step=32, window_size=(224, 224)):
     """
@@ -304,6 +249,7 @@ def simple_predict_full_image(model, image_path, csv_path, num_classes, device, 
     Returns:
         np.array: Predicted mask for the entire image.
     """
+    model.eval()
     image_name = Path(image_path).stem
     print(f"Predicting image {image_name} without uncertainty")
     ancillary_data = load_ancillary_data(csv_path, image_name, num_classes)
@@ -351,3 +297,38 @@ def simple_predict_full_image(model, image_path, csv_path, num_classes, device, 
     pred_mask = np.argmax(class_score_map, axis=0).astype(np.uint8)
 
     return pred_mask
+
+def save_prediction_results(image_path, pred_mask, uncertainty_map=None, overlay_image=None, save_dir="predictions"):
+    """
+    Save the prediction mask, overlay image, and optionally the uncertainty map.
+
+    Args:
+        image_path (str): Path to the input image.
+        pred_mask (np.array): Predicted mask for the entire image.
+        uncertainty_map (np.array or None): Optional uncertainty map to save.
+        overlay_image (np.array or None): Overlay image to save.
+        save_dir (str): Directory to save the results.
+    """
+    # Ensure the save directory exists
+    Path(save_dir).mkdir(parents=True, exist_ok=True)
+
+    # Extract the base name of the input image (e.g., "image.jpg" -> "image")
+    image_name = Path(image_path).stem
+
+    # Save the predicted mask
+    mask_save_path = Path(save_dir) / f"{image_name}_pred_mask.png"
+    Image.fromarray(pred_mask.astype(np.uint8)).save(mask_save_path)
+    print(f"Prediction mask saved to: {mask_save_path}")
+
+    # Save the overlay image if provided
+    if overlay_image is not None:
+        overlay_save_path = Path(save_dir) / f"{image_name}_overlay.png"
+        Image.fromarray(overlay_image).save(overlay_save_path)
+        print(f"Overlay image saved to: {overlay_save_path}")
+
+    # Save the uncertainty map if provided
+    if uncertainty_map is not None:
+        uncertainty_save_path = Path(save_dir) / f"{image_name}_uncertainty_map.png"
+        uncertainty_map_normalized = (uncertainty_map / uncertainty_map.max() * 255).astype(np.uint8)
+        Image.fromarray(uncertainty_map_normalized).save(uncertainty_save_path)
+        print(f"Uncertainty map saved to: {uncertainty_save_path}")
