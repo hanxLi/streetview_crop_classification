@@ -9,6 +9,8 @@ from torchvision import transforms
 from PIL import Image, ImageDraw
 from chipping import generate_stacked_image
 from tqdm import tqdm
+from torchvision.transforms.functional import normalize
+
 
 def enable_dropout(model):
     """
@@ -196,29 +198,39 @@ def predict_full_image(model, image_path, csv_path, num_classes, device, step=32
 
     return pred_mask, uncertainty_map
 
-def overlay_prediction(image_path, pred_mask, alpha=0.6):
+def overlay_prediction(image_path, pred_mask, alpha=0.6, colors=None):
     """
-    Overlay the predicted mask on the original image with a transparency setting.
+    Overlay the predicted mask on the original image with distinct colors for each class.
 
     Args:
         image_path (str): Path to the original image file.
         pred_mask (np.array): Predicted mask to overlay.
         alpha (float): Transparency level for overlay.
+        colors (list or None): List of RGB tuples representing colors for each class (0, 1, 2, ...).
 
     Returns:
         np.array: Combined image with the mask overlay.
     """
+
     # Load the original image and convert to RGB
     original_image = cv2.imread(image_path)
     original_image_rgb = cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB)
 
-    # Convert prediction to a color map for visibility
-    pred_colored = cv2.applyColorMap((pred_mask * 255 // pred_mask.max()).astype(np.uint8), cv2.COLORMAP_JET)
+    # Define default colors if none are provided
+    if colors is None:
+        colors = [(0, 0, 0), (255, 0, 0), (0, 255, 0)]  # Default: Black, Red, Green
 
-    # Blend the original image and the color-mapped prediction
-    overlay = cv2.addWeighted(original_image_rgb, 1 - alpha, pred_colored, alpha, 0)
+    # Create a blank RGB mask and fill with class colors
+    h, w = pred_mask.shape
+    color_mask = np.zeros((h, w, 3), dtype=np.uint8)
+    for class_id, color in enumerate(colors):
+        color_mask[pred_mask == class_id] = color
+
+    # Blend the original image and the color mask
+    overlay = cv2.addWeighted(original_image_rgb, 1 - alpha, color_mask, alpha, 0)
     
     return overlay
+
 
 # def simple_predict_full_image(model, image_path, csv_path, num_classes, device, step=32, window_size=(224, 224)):
 #     """
@@ -310,10 +322,12 @@ def simple_predict_full_image(model, image_path, csv_path, num_classes, device, 
         for x in range(0, W - window_size[1] + 1, step):
             # Extract the window and resize to match training context (512x512)
             window = input_image[y:y + window_size[0], x:x + window_size[1]]
-            window_resized = cv2.resize(window, (512, 512))
+            # window_resized = cv2.resize(window, (512, 512))
 
             # Convert the resized window to tensor format and move to device
-            window_tensor = transforms.ToTensor()(window_resized).unsqueeze(0).to(device)
+            # window_tensor = transforms.ToTensor()(window_resized).unsqueeze(0).to(device)
+            window_tensor = transforms.ToTensor()(window).unsqueeze(0).to(device)
+
             ancillary_tensor = ancillary_data.unsqueeze(0).to(device)
 
             # Perform a single forward pass with no dropout or uncertainty estimation

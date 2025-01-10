@@ -10,7 +10,7 @@ from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 from eval import do_accuracy_evaluation
 from trainval import train, validate
-from predict_uncertain import predict_full_image, load_ancillary_data, overlay_prediction, simple_predict_full_image
+from predict_uncertain import *
 from chipping import generate_stacked_image
 from loss import *
 
@@ -278,9 +278,10 @@ class ModelCompiler:
 
             return pred_mask, uncertainty_map
     
-    def simple_predict_and_display(self, image_path, csv_path, step=16, window_size=(224, 224), 
+    def simple_predict_and_display(self, image_path, csv_path, mean=None, std=None, step=16, window_size=(224, 224), 
                                 num_classes=3, save=False):
         pred_mask = simple_predict_full_image(self.model, image_path, csv_path, num_classes, self.device, step, window_size)
+        # pred_mask = optimized_predict_full_image(self.model, image_path, csv_path, num_classes, self.device, step, window_size)
 
         # Overlay prediction on the original image and display
         overlay_image = overlay_prediction(image_path, pred_mask)
