@@ -154,12 +154,12 @@ class ModelCompiler:
 
             # Save checkpoint every 10 epochs
             if (epoch + 1) % 10 == 0:
-                self.save_checkpoint(optimizer, scheduler, epoch + 1)
+                self.save_checkpoint(epoch + 1)
 
             print(f"Epoch {epoch+1} completed in {time.time() - epoch_start:.2f} seconds")
 
         # Save the final model checkpoint at the end of training
-        self.save_checkpoint(optimizer, scheduler, epochs, final=True)
+        self.save_checkpoint(epochs, final=True)
 
         if writer:
             writer.close()
