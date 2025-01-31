@@ -48,25 +48,44 @@ class ModelCompiler:
 
     def load_params(self, model_weights_path, freeze_params=None):
         """
-        Load the model's weights.
+        Load the model's weights and optionally freeze layers.
+
+        Args:
+            model_weights_path (str): Path to the saved model weights.
+            freeze_params (list, optional): List of layer names to freeze.
         """
         print(f"Loading model weights from: {model_weights_path}")
-        
-        # Load the model weights
-        model_state_dict = torch.load(model_weights_path, map_location=self.device)
-        if any(key.startswith("module.") for key in model_state_dict.keys()):
-            model_state_dict = {k[7:]: v for k, v in model_state_dict.items()}
 
-        # Load the state dict into the model
-        self.model.load_state_dict(model_state_dict, strict=False)
+        # Ensure self.device is a torch.device object
+        self.device = torch.device(self.device) if isinstance(self.device, str) else self.device
+
+        # Load the model weights
+        model_state_dict = torch.load(model_weights_path, map_location=self.device, weights_only=True)
+
+        # Detect and remove "module." prefix if loading from a Distributed Data Parallel (DDP) model
+        if list(model_state_dict.keys())[0].startswith("module."):
+            print("🛠 Detected 'module.' prefix in state dict, removing it...")
+            model_state_dict = {k.replace("module.", ""): v for k, v in model_state_dict.items()}
+
+        # Load the state dict and log missing/unexpected keys
+        missing_keys, unexpected_keys = self.model.load_state_dict(model_state_dict, strict=False)
+
+        if missing_keys:
+            print(f"Warning: Missing keys in state dict: {missing_keys}")
+        if unexpected_keys:
+            print(f"Warning: Unexpected keys in state dict: {unexpected_keys}")
+
+        # Move model to the correct device
         self.model = self.model.to(self.device)
         print("Model weights loaded successfully.")
 
         # Optional: Freeze specific layers if requested
         if freeze_params:
-            for i, param in enumerate(self.model.parameters()):
-                if i in freeze_params:
+            for name, param in self.model.named_parameters():
+                if name in freeze_params:
                     param.requires_grad = False
+                    print(f"Froze layer: {name}")
+
 
 
 
@@ -269,9 +288,9 @@ class ModelCompiler:
 
     #         return pred_mask, uncertainty_map
     
-    def simple_predict(self, image_path, csv_path, step=16, window_size=(224, 224), 
+    def simple_predict(self, image_path, csv_path, norm_params, step=16, window_size=(224, 224), 
                                 num_classes=3, save_path=False):
-        pred_mask = simple_predict_full_image(self.model, image_path, csv_path, num_classes, self.device, step, window_size)
+        pred_mask = simple_predict_full_image(self.model, image_path, csv_path, num_classes, self.device, norm_params, step, window_size)
 
         # Overlay prediction on the original image and display
         overlay_image = overlay_prediction(image_path, pred_mask)

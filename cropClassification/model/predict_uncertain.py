@@ -231,9 +231,7 @@ def overlay_prediction(image_path, pred_mask, alpha=0.6, colors=None):
     
     return overlay
 
-
-
-def simple_predict_full_image(model, image_path, csv_path, num_classes, device, step=32, window_size=(224, 224)):
+def simple_predict_full_image(model, image_path, csv_path, num_classes, device, norm_params, step=32, window_size=(224, 224)):
     """
     Perform a sliding window prediction on the entire image using argmax for final mask aggregation.
     
@@ -243,6 +241,7 @@ def simple_predict_full_image(model, image_path, csv_path, num_classes, device, 
         csv_path (str): Path to the ancillary data CSV.
         num_classes (int): Number of classes for segmentation.
         device (torch.device): Device to run the prediction on.
+        norm_params (tuple): Mean and standard deviation for normalization.
         step (int): Step size for the sliding window.
         window_size (tuple): Size of each sliding window patch.
     
@@ -255,24 +254,25 @@ def simple_predict_full_image(model, image_path, csv_path, num_classes, device, 
     ancillary_data = load_ancillary_data(csv_path, image_name, num_classes)
 
     # Load and prepare the input image
-    image = cv2.imread(image_path)
-    input_image = generate_stacked_image(image)
-    H, W = input_image.shape[:2]
+    image = cv2.imread(image_path)  # (H, W, 3) if using RGB
+    input_image = generate_stacked_image(image)  # Ensure it outputs (H, W, C) with C=10
+
+    H, W, C = input_image.shape  # Check number of bands
+
+    # Convert NumPy (H, W, C) → Tensor (C, H, W) and normalize
+    input_image_tensor = torch.from_numpy(input_image).permute(2, 0, 1).float()
+    mean, std = norm_params
+    input_image_tensor = transforms.functional.normalize(input_image_tensor, mean=mean, std=std)
 
     # Initialize score map for each class and a count map for normalization
     class_score_map = np.zeros((num_classes, H, W), dtype=np.float32)
-    count_map = np.zeros((H, W), dtype=np.uint8)
+    count_map = np.zeros((H, W), dtype=np.float32)
 
     # Sliding window prediction
     for y in range(0, H - window_size[0] + 1, step):
         for x in range(0, W - window_size[1] + 1, step):
-            # Extract the window and resize to match training context (512x512)
-            window = input_image[y:y + window_size[0], x:x + window_size[1]]
-            # window_resized = cv2.resize(window, (512, 512))
-
-            # Convert the resized window to tensor format and move to device
-            # window_tensor = transforms.ToTensor()(window_resized).unsqueeze(0).to(device)
-            window_tensor = transforms.ToTensor()(window).unsqueeze(0).to(device)
+            # Extract the window (C, H, W)
+            window_tensor = input_image_tensor[:, y:y + window_size[0], x:x + window_size[1]].unsqueeze(0).to(device)
 
             ancillary_tensor = ancillary_data.unsqueeze(0).to(device)
 
@@ -280,10 +280,9 @@ def simple_predict_full_image(model, image_path, csv_path, num_classes, device, 
             with torch.no_grad():
                 logits = model(window_tensor, ancillary_tensor)
                 probs = F.softmax(logits, dim=1)  # Shape: (1, num_classes, 224, 224)
-                probs_resized = F.interpolate(probs, size=window_size, mode='nearest')  # Resize back to 224x224
 
             # Convert probabilities to numpy and accumulate in the score map
-            probs_np = probs_resized.squeeze(0).cpu().numpy()  # Shape: (num_classes, 224, 224)
+            probs_np = probs.squeeze(0).cpu().numpy()  # Shape: (num_classes, 224, 224)
             for c in range(num_classes):
                 class_score_map[c, y:y + window_size[0], x:x + window_size[1]] += probs_np[c]
             count_map[y:y + window_size[0], x:x + window_size[1]] += 1
@@ -297,6 +296,75 @@ def simple_predict_full_image(model, image_path, csv_path, num_classes, device, 
     pred_mask = np.argmax(class_score_map, axis=0).astype(np.uint8)
 
     return pred_mask
+
+
+# def simple_predict_full_image(model, image_path, csv_path, num_classes, device, norm_params, step=32, window_size=(224, 224)):
+#     """
+#     Perform a sliding window prediction on the entire image using argmax for final mask aggregation.
+    
+#     Args:
+#         model (torch.nn.Module): The model for prediction.
+#         image_path (str): Path to the input image.
+#         csv_path (str): Path to the ancillary data CSV.
+#         num_classes (int): Number of classes for segmentation.
+#         device (torch.device): Device to run the prediction on.
+#         step (int): Step size for the sliding window.
+#         window_size (tuple): Size of each sliding window patch.
+    
+#     Returns:
+#         np.array: Predicted mask for the entire image.
+#     """
+#     model.eval()
+#     image_name = Path(image_path).stem
+#     print(f"Predicting image {image_name} without uncertainty")
+#     ancillary_data = load_ancillary_data(csv_path, image_name, num_classes)
+
+#     # Load and prepare the input image
+#     image = cv2.imread(image_path)
+#     input_image = generate_stacked_image(image)
+#     H, W = input_image.shape[:2]
+#     mean, std = norm_params
+#     input_image = transforms.functional.normalize(input_image, mean=mean, std=std)
+
+
+#     # Initialize score map for each class and a count map for normalization
+#     class_score_map = np.zeros((num_classes, H, W), dtype=np.float32)
+#     count_map = np.zeros((H, W), dtype=np.float32)
+
+#     # Sliding window prediction
+#     for y in range(0, H - window_size[0] + 1, step):
+#         for x in range(0, W - window_size[1] + 1, step):
+#             # Extract the window and resize to match training context (512x512)
+#             window = input_image[y:y + window_size[0], x:x + window_size[1]]
+#             # window_resized = cv2.resize(window, (512, 512))
+
+#             # Convert the resized window to tensor format and move to device
+#             # window_tensor = transforms.ToTensor()(window_resized).unsqueeze(0).to(device)
+#             window_tensor = transforms.ToTensor()(window).unsqueeze(0).to(device)
+
+#             ancillary_tensor = ancillary_data.unsqueeze(0).to(device)
+
+#             # Perform a single forward pass with no dropout or uncertainty estimation
+#             with torch.no_grad():
+#                 logits = model(window_tensor, ancillary_tensor)
+#                 probs = F.softmax(logits, dim=1)  # Shape: (1, num_classes, 224, 224)
+#                 # probs_resized = F.interpolate(probs, size=window_size, mode='nearest')  # Resize back to 224x224
+
+#             # Convert probabilities to numpy and accumulate in the score map
+#             probs_np = probs.squeeze(0).cpu().numpy()  # Shape: (num_classes, 224, 224)
+#             for c in range(num_classes):
+#                 class_score_map[c, y:y + window_size[0], x:x + window_size[1]] += probs_np[c]
+#             count_map[y:y + window_size[0], x:x + window_size[1]] += 1
+
+#     # Normalize by dividing by the count map where count_map > 0
+#     count_map = np.maximum(count_map, 1)  # Avoid division by zero
+#     for c in range(num_classes):
+#         class_score_map[c] /= count_map
+
+#     # Take argmax along the class dimension to get final class predictions
+#     pred_mask = np.argmax(class_score_map, axis=0).astype(np.uint8)
+
+#     return pred_mask
 
 def save_prediction_results(image_path, pred_mask, uncertainty_map=None, overlay_image=None, save_dir="predictions"):
     """

@@ -5,25 +5,36 @@ import torch.nn.functional as F
 ### FiLM Layer ###
 class FiLM(nn.Module):
     """
-    FiLM Layer: Generates gamma and beta parameters to modulate the feature maps.
+    FiLM Layer: Generates gamma and beta parameters to modulate feature maps.
+    Handles one-hot encoded `ancillary_data` efficiently using `nn.Embedding`.
     """
-    def __init__(self, input_dim, feature_map_channels):
+    def __init__(self, num_classes, feature_map_channels):
         super(FiLM, self).__init__()
-        self.gamma = nn.Linear(input_dim, feature_map_channels)
-        self.beta = nn.Linear(input_dim, feature_map_channels)
+        self.embedding = nn.Embedding(num_classes, feature_map_channels)
+        self.gamma = nn.Linear(feature_map_channels, feature_map_channels)
+        self.beta = nn.Linear(feature_map_channels, feature_map_channels)
 
     def forward(self, feature_map, ancillary_data):
         """
         Modulate feature map with FiLM parameters.
+
         Args:
             feature_map (Tensor): Shape [B, C, H, W]
-            ancillary_data (Tensor): Shape [B, input_dim]
+            ancillary_data (Tensor): One-hot encoded input, Shape [B, num_classes]
+
         Returns:
             Tensor: Modulated feature map.
         """
-        gamma = self.gamma(ancillary_data).unsqueeze(2).unsqueeze(3)  # [B, C, 1, 1]
-        beta = self.beta(ancillary_data).unsqueeze(2).unsqueeze(3)    # [B, C, 1, 1]
+        assert ancillary_data.dim() == 2, f"Expected ancillary_data shape [B, num_classes], got {ancillary_data.shape}"
+
+        # Convert one-hot to class index for embedding lookup
+        embedded_ancillary = self.embedding(ancillary_data.argmax(dim=1))  # Shape [B, feature_map_channels]
+
+        gamma = self.gamma(embedded_ancillary).unsqueeze(2).unsqueeze(3)  # [B, C, 1, 1]
+        beta = self.beta(embedded_ancillary).unsqueeze(2).unsqueeze(3)    # [B, C, 1, 1]
+
         return gamma * feature_map + beta
+
 
 class SelfAttention(nn.Module):
     """
@@ -48,14 +59,11 @@ class SelfAttention(nn.Module):
 
         # Compute attention weights and apply softmax
         attention = torch.bmm(query, key)  # [B, HW, HW]
-        attention = F.softmax(attention, dim=-1)
-
+        attention = F.softmax(attention, dim=1)
+        attention = self.dropout(attention) 
         # Apply attention to the value matrix
         out = torch.bmm(attention, value)  # [B, HW, C]
         out = out.permute(0, 2, 1).view(B, C, H, W)  # [B, C, H, W]
-
-        # Apply dropout to the output of the self-attention layer
-        out = self.dropout(out)
 
         # Apply scaling with gamma and add the input (residual connection)
         out = self.gamma * out + x
@@ -212,7 +220,7 @@ class UNetWithFiLM(nn.Module):
         self.up1 = Up(1024, 512 // factor, bilinear, dropout_rate=dropout_rate)
         self.up2 = Up(512, 256 // factor, bilinear, dropout_rate=dropout_rate)
         self.up3 = Up(256, 128 // factor, bilinear, dropout_rate=dropout_rate)
-        self.up4 = Up(128, 64, bilinear, use_dropout=dropout_rate)
+        self.up4 = Up(128, 64, bilinear, dropout_rate=dropout_rate)
 
         # FiLM layer for ancillary data modulation
         self.film = FiLM(input_dim=ancillary_data_dim, feature_map_channels=512)
