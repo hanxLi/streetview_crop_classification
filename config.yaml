@@ -1,0 +1,71 @@
+model:
+  name: UNetWithAttentionDeep
+  params:
+    in_channels: 10  # Since we are using 10-channel input images
+    out_classes: 3  # Number of output classes for segmentation
+  working_dir: /workspace/data/outputs
+  root_dir: /workspace
+
+training:
+  epochs: 50
+  batch_size: 32
+  dropout_rate: 0.15
+  learning_rate: 0.01
+  optimizer:
+    type: Adam
+    params:
+      lr: 0.1
+  scheduler:
+    type: StepLR
+    params:
+      step_size: 10
+      gamma: 0.8
+  criterion: BalancedCrossEntropyLoss
+  classwise_weights: [0.14335682, 0.35709336, 0.49954982]
+
+validation:
+  epochs: 50
+  batch_size: 16
+
+dataset:
+  train_csv: /workspace/data/masked_data_csiss/training/train_chipping_csv_w_anc.csv
+  val_csv: /workspace/data/masked_data_csiss/validation/validation_chipping_csv_w_anc.csv
+  train_root_path: /workspace/data/masked_data_csiss/training
+  val_root_path: /workspace/data/masked_data_csiss/validation
+  image_column: img_chip_path
+  mask_column: lbl_chip_path
+  train_mean: [121.65670372, 161.46653486, 158.23006705, 161.48324796, 227.81869621, 
+               146.17250505, 74.17987694, 98.37069385, 175.44668774, 0.59970105]
+  train_std: [52.67447251, 55.39850822, 78.60574882, 53.93343019, 59.63657872, 
+              109.67295329, 29.33554407, 55.42471356, 62.5700217, 0.21684658]
+  val_mean: [116.55829252, 159.9192156, 157.07218772, 159.64730144, 232.93981733, 
+             140.17248727, 73.87612301, 104.39620349, 175.07042173, 0.59085459]
+  val_std: [52.10727386, 54.40206462, 79.55377193, 53.06491964, 48.64101637, 
+            109.12006317, 28.95246699, 56.29244445, 63.20585391, 0.21176251]
+  classwise_norm:
+    Other:
+      mean: [110.14499, 138.28326, 117.67161, 138.71075, 233.10298, 95.24617, 
+             61.51174, 95.255585, 143.12497, 0.5121758]
+      std: [49.80741, 58.08042, 73.33471, 56.73531, 46.3197, 107.53641, 
+            27.30666, 48.58509, 61.8592, 0.22473]
+    Maize:
+      mean: [90.51625, 108.20322, 72.41352, 109.907, 203.1153, 24.78379, 
+             45.99272, 118.35542, 112.66669, 0.39319476]
+      std: [53.35697, 45.1693, 41.97862, 46.84034, 85.41561, 37.93971, 
+            21.92598, 52.69628, 46.29754, 0.1780796]
+    Soybean:
+      mean: [83.55291, 101.03232, 66.89771, 102.10976, 220.03397, 28.55189, 
+             47.94096, 116.89587, 103.48843, 0.36566228]
+      std: [49.91921, 47.52045, 41.91468, 48.74042, 67.89334, 47.91879, 
+            20.7751, 53.59672, 48.15541, 0.18223667]
+
+evaluation:
+  filename: csiss_street_view_crop_classification.csv
+  class_mapping:
+    0: Background
+    1: Maize
+    2: Soybean
+
+inference:
+  filename: image_summary.csv
+  path: /workspace/data/image_summary.csv
