@@ -4,6 +4,10 @@ import random
 from torch.utils.data import DataLoader
 from pathlib import Path
 
+import optuna
+import time
+from datetime import datetime
+
 from cropClassification.load_data import RoadsideCropImageDataset
 from cropClassification.model_train.compiler import ModelCompiler
 from cropClassification.model.unets import *
@@ -370,5 +374,194 @@ class PipelineManager:
             image_indices = self._index_generator(summary_df)
         results = self._predict(summary_df, image_indices)
         return metrics, results
+
     
-    
+    def hypertune(self, n_trials=20):
+        """
+        Perform hyperparameter tuning using Optuna.
+        
+        The search space is expected to be defined in the config under 'hypertuning.search_space'.
+        Results are automatically saved to the working directory.
+        
+        Args:
+            n_trials (int): Number of trials to run (default: 20)
+            
+        Returns:
+            dict: Best parameters and their performance metrics
+        """
+        
+        # Check if search space is defined in config
+        if 'hypertuning' not in self.config or 'search_space' not in self.config['hypertuning']:
+            raise ValueError("Search space must be defined in config['hypertuning']['search_space']")
+        
+        search_space = self.config['hypertuning']['search_space']
+        
+        # Create timestamp and directory for results
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        study_name = f"hypertune_{timestamp}"
+        results_dir = os.path.join(self.working_dir, "hypertuning", study_name)
+        os.makedirs(results_dir, exist_ok=True)
+        
+        print(f"Starting hyperparameter tuning with {n_trials} trials")
+        print(f"Results will be saved to {results_dir}")
+        print(f"Search space: {search_space}")
+        
+        # Define the objective function for Optuna
+        def objective(trial):
+            # Create hyperparameters for this trial
+            params = {}
+            
+            for param_name, param_values in search_space.items():
+                if isinstance(param_values, list) and len(param_values) > 0:
+                    # Handle discrete values
+                    params[param_name] = trial.suggest_categorical(param_name, param_values)
+                elif isinstance(param_values, tuple) and len(param_values) == 2:
+                    # Handle continuous ranges
+                    min_val, max_val = param_values
+                    if isinstance(min_val, int) and isinstance(max_val, int):
+                        # Integer parameter
+                        params[param_name] = trial.suggest_int(param_name, min_val, max_val)
+                    else:
+                        # Float parameter (use log scale for learning rates)
+                        log_scale = param_name == 'learning_rate'
+                        params[param_name] = trial.suggest_float(param_name, min_val, max_val, log=log_scale)
+                else:
+                    raise ValueError(f"Invalid search space format for parameter '{param_name}'")
+            
+            # Update configuration with current hyperparameters
+            if 'learning_rate' in params:
+                self.config['training']['learning_rate'] = params['learning_rate']
+            if 'drop_rate' in params:
+                self.config['training']['dropout_rate'] = params['drop_rate']
+            if 'epochs' in params:
+                self.config['training']['epochs'] = params['epochs']
+            if 'train_batch_size' in params:
+                self.config['training']['batch_size'] = params['train_batch_size']
+            
+            # Log the current trial parameters
+            print(f"\nTrial {trial.number}/{n_trials}:")
+            for name, value in params.items():
+                print(f"  {name}: {value}")
+            
+            start_time = time.time()
+            
+            try:
+                # Initialize the model with the current hyperparameters
+                self._initialize_model(load_datasets=True)
+                
+                # Train the model
+                self._train()
+                
+                # Evaluate the model
+                agg_metrics, class_metrics = self._evaluate(print_results=True)
+                
+                # Calculate training time
+                elapsed_time = time.time() - start_time
+                
+                # Extract the metric we want to optimize (mean IoU)
+                metric = agg_metrics['Mean IoU']
+                
+                # Save trial results
+                trial_result = {
+                    'trial': trial.number,
+                    **params,
+                    'mean_iou': metric,
+                    'overall_accuracy': agg_metrics['Overall Accuracy'],
+                    'mean_f1': agg_metrics['Mean F1 Score'],
+                    'background_iou': class_metrics['Background']['IoU'],
+                    'maize_iou': class_metrics['Maize']['IoU'],
+                    'soybean_iou': class_metrics['Soybean']['IoU'],
+                    'training_time': elapsed_time,
+                    'model_dir': self.model_comp.model_dir
+                }
+                
+                # Save trial to CSV
+                trial_df = pd.DataFrame([trial_result])
+                trial_csv = os.path.join(results_dir, f"trial_{trial.number}.csv")
+                trial_df.to_csv(trial_csv, index=False)
+                
+                # Also append to all trials CSV
+                all_trials_csv = os.path.join(results_dir, "all_trials.csv")
+                if os.path.exists(all_trials_csv):
+                    all_trials_df = pd.read_csv(all_trials_csv)
+                    all_trials_df = pd.concat([all_trials_df, trial_df], ignore_index=True)
+                else:
+                    all_trials_df = trial_df
+                all_trials_df.to_csv(all_trials_csv, index=False)
+                
+                print(f"Trial {trial.number} completed with Mean IoU: {metric:.4f} (time: {elapsed_time:.2f}s)")
+                
+                return metric  # Return the metric to be maximized
+                
+            except Exception as e:
+                print(f"Error during trial {trial.number}: {e}")
+                # Save the error information
+                error_info = {
+                    'trial': trial.number,
+                    **params,
+                    'error': str(e),
+                    'training_time': time.time() - start_time
+                }
+                pd.DataFrame([error_info]).to_csv(
+                    os.path.join(results_dir, f"trial_{trial.number}_error.csv"), 
+                    index=False
+                )
+                # Return a very low score for failed trials
+                return 0.0
+        
+        # Create the Optuna study
+        study = optuna.create_study(
+            study_name=study_name,
+            direction="maximize",  # We want to maximize the IoU
+            storage=f"sqlite:///{os.path.join(results_dir, 'optuna.db')}",
+            load_if_exists=True
+        )
+        
+        # Run the optimization
+        study.optimize(objective, n_trials=n_trials)
+        
+        # Get the best parameters and value
+        best_params = study.best_params
+        best_value = study.best_value
+        
+        print("\nHyperparameter tuning completed!")
+        print("\nBest Parameters:")
+        for name, value in best_params.items():
+            print(f"  {name}: {value}")
+        print(f"Best Mean IoU: {best_value:.4f}")
+        
+        # Save the best parameters
+        with open(os.path.join(results_dir, "best_parameters.txt"), 'w') as f:
+            f.write(f"Best Mean IoU: {best_value:.4f}\n\n")
+            for param_name, param_value in best_params.items():
+                f.write(f"{param_name}: {param_value}\n")
+        
+        # Generate and save visualizations
+        # Export study visualizations
+        fig1 = optuna.visualization.plot_optimization_history(study)
+        fig1.write_image(os.path.join(results_dir, "optimization_history.png"))
+        
+        fig2 = optuna.visualization.plot_param_importances(study)
+        fig2.write_image(os.path.join(results_dir, "param_importances.png"))
+        
+        fig3 = optuna.visualization.plot_slice(study)
+        fig3.write_image(os.path.join(results_dir, "slice_plot.png"))
+        
+        # Update the config with the best parameters
+        if 'learning_rate' in best_params:
+            self.config['training']['learning_rate'] = best_params['learning_rate']
+        if 'drop_rate' in best_params:
+            self.config['training']['dropout_rate'] = best_params['drop_rate']
+        if 'epochs' in best_params:
+            self.config['training']['epochs'] = best_params['epochs']
+        if 'train_batch_size' in best_params:
+            self.config['training']['batch_size'] = best_params['train_batch_size']
+        
+        print("\nConfig updated with best parameters!")
+        
+        # Return best parameters and value
+        return {
+            'best_params': best_params,
+            'best_value': best_value,
+            'study': study
+    }

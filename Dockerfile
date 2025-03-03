@@ -75,7 +75,11 @@ scipy==1.11.4\n\
 exifread==3.0.0\n\
 opencv-python-headless==4.8.1.78\n\
 pyyaml==6.0.1\n\
-jupyterlab==4.0.9" > /tmp/requirements.txt
+jupyterlab==4.0.9\n\
+optuna==3.4.0\n\
+plotly==5.18.0\n\
+kaleido==0.2.1\n\
+sqlalchemy==2.0.23" > /tmp/requirements.txt
 
 # Install remaining Python packages via pip
 RUN /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
@@ -89,14 +93,18 @@ RUN mkdir -p /tmp/sam2 && cd /tmp/sam2 \
     && cd sam2 \
     && /opt/venv/bin/pip install -e .
 
-# Create a non-root user
-RUN useradd -m -s /bin/bash -G sudo user \
+# Create a non-root user with specific UID/GID to match host system (default: 1000)
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+RUN groupadd -g ${GROUP_ID} usergroup && \
+    useradd -m -s /bin/bash -u ${USER_ID} -g usergroup -G sudo user \
     && echo "user ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Create project directory structure
 RUN mkdir -p /workspace/cropclassification \
     && mkdir -p /workspace/data \
-    && mkdir -p /workspace/models
+    && mkdir -p /workspace/models \
+    && mkdir -p /workspace/logs
 
 # Set up Jupyter configuration for remote access
 RUN mkdir -p /home/user/.jupyter \
@@ -115,6 +123,27 @@ function show_help {\n\
     echo "  python [args] - Run Python with virtual environment activated"\n\
     echo "  help - Show this help message"\n\
 }\n\
+\n\
+# Fix permissions for mounted volumes if needed\n\
+fix_permissions() {\n\
+  if [ -d "/workspace" ]; then\n\
+    echo "Checking workspace permissions..."\n\
+    if [ ! -w "/workspace" ]; then\n\
+      echo "Warning: /workspace is not writable! Some operations may fail."\n\
+    else\n\
+      # Only fix permissions for directories created by root during build\n\
+      for dir in /workspace/cropclassification /workspace/data /workspace/models /workspace/logs; do\n\
+        if [ -d "$dir" ] && [ "$(stat -c %u $dir)" = "0" ]; then\n\
+          echo "Fixing permissions for $dir"\n\
+          sudo chown -R $(id -u):$(id -g) $dir\n\
+        fi\n\
+      done\n\
+    fi\n\
+  fi\n\
+}\n\
+\n\
+# Run permission fix on startup\n\
+fix_permissions\n\
 \n\
 case "$1" in\n\
     start-jupyter)\n\
@@ -147,7 +176,7 @@ esac\n\
 ' > /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 
 # Set ownership and permissions
-RUN chown -R user:user /home/user /workspace /usr/local/bin/entrypoint.sh
+RUN chown -R user:usergroup /home/user /workspace /usr/local/bin/entrypoint.sh /opt/venv
 
 # Set the working directory to the workspace directory
 WORKDIR /workspace

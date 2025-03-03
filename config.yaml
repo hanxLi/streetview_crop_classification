@@ -69,3 +69,30 @@ evaluation:
 inference:
   filename: image_summary.csv
   path: /workspace/data/image_summary.csv
+
+# Hyperparameter tuning configuration
+hypertuning:
+  # Main search space definition
+  search_space:
+    learning_rate: [0.1, 0.01, 0.001, 0.0001]  # Discrete values for learning rate
+    drop_rate: [0.1, 0.15, 0.2, 0.3, 0.5]      # Dropout rates to try
+    epochs: [40, 60, 80, 100]                  # Number of training epochs
+    train_batch_size: [16, 32, 64, 128]        # Training batch sizes
+  
+  # # Optional parameters
+  # study_name: "crop_segmentation_tuning"       # Name for the Optuna study
+  # optimization_direction: "maximize"           # "maximize" for metrics like IoU, "minimize" for loss
+  # metric: "Mean IoU"                           # Metric to optimize
+  
+  # # Output configuration
+  # results_dir: "/workspace/data/outputs/hypertuning"  # Directory to save results
+  
+  # # Advanced options
+  # pruning:
+  #   enabled: true                              # Terminate unpromising trials early
+  #   patience: 5                                # Number of epochs without improvement before pruning
+  
+  # # Cross-validation options
+  # cross_validation:
+  #   enabled: false                             # Whether to use cross-validation
+  #   n_folds: 3                                 # Number of cross-validation folds
